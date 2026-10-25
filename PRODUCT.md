@@ -29,6 +29,7 @@ An original implementation, not a clone: the master password is stretched with A
 ## Capabilities and Constraints
 
 - Entry types: login, secure note, card, identity. Favorites, tags, search, sorting.
+- Item history (last 20 versions) and trash, both encrypted with the vault; restore a version, restore a deleted item, or remove it permanently.
 - Client-side Argon2id (64 MiB, t=3, p=1), HKDF-SHA256 key split, XChaCha20-Poly1305 vault encryption with the KDF header bound as AAD.
 - Session cookie holds a random token; the database stores only its SHA-256. Eight failed attempts per fifteen minutes.
 - Password generator, entropy estimate, TOTP (RFC 6238), audit with optional HIBP range check.
@@ -48,7 +49,7 @@ An original implementation, not a clone: the master password is stretched with A
 
 ## Evidence on Hand
 
-- Working application at `src/`, with passing unit tests (including the import parsers) and a Playwright end-to-end flow.
+- Working application at `src/`, with passing unit tests (including the import parsers, history, trash, and schema migration) and a Playwright end-to-end flow.
 - `README.md` documents the architecture and threat model.
 - No real user data, testimonials, benchmarks, or press. Any demo entries are synthetic.
 
