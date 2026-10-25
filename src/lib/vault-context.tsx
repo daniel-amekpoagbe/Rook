@@ -19,8 +19,10 @@ import {
   emptyVault,
   entryFingerprint,
   isSupportedVaultFormat,
+  MAX_ENTRIES,
   MAX_HISTORY_VERSIONS,
   MAX_TRASH_ITEMS,
+  mergeVaultData,
   openVault,
   openVaultWithFallback,
   sealVault,
@@ -43,12 +45,29 @@ import {
 type Status = 'booting' | 'locked' | 'unlocked'
 type SyncState = 'idle' | 'saving' | 'saved' | 'conflict' | 'error'
 
+export type ConflictChoice = 'mine' | 'server' | 'merge'
+
+export interface VaultConflict {
+  remoteVersion: number
+  remoteUpdatedAt: number
+  detectedAt: number
+  remoteEntries: number
+  remoteTrash: number
+}
+
+interface ConflictSnapshot {
+  remote: VaultData
+  remoteVersion: number
+  remoteUpdatedAt: number
+  detectedAt: number
+}
+
 const ERROR_MESSAGES: Record<string, string> = {
   HANDLE_TAKEN: 'That username is already taken.',
   INVALID_CREDENTIALS: 'Wrong master password.',
   RATE_LIMITED: 'Too many attempts. Try again in a few minutes.',
   UNAUTHENTICATED: 'Your session expired. Unlock again.',
-  CONFLICT: 'This vault changed on another device. Reload before saving.',
+  CONFLICT: 'This vault changed in another session. Resolve the conflict before saving.',
   VAULT_MISSING: 'No vault found for this account.',
 }
 
@@ -75,6 +94,11 @@ export function friendlyError(error: unknown): string {
   return message
 }
 
+function isConflictError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return message === 'CONFLICT' || message.includes('CONFLICT')
+}
+
 interface Secrets {
   masterKey: Uint8Array
   vaultKey: Uint8Array
@@ -86,6 +110,8 @@ interface VaultContextValue {
   data: VaultData | null
   sync: SyncState
   error: string | null
+  conflict: VaultConflict | null
+  resolveConflict: (choice: ConflictChoice) => Promise<void>
   lastSyncedAt: number | null
   autoLockMinutes: number
   setAutoLockMinutes: (minutes: number) => void
@@ -116,6 +142,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const [data, setData] = useState<VaultData | null>(null)
   const [sync, setSync] = useState<SyncState>('idle')
   const [error, setError] = useState<string | null>(null)
+  const [conflict, setConflict] = useState<VaultConflict | null>(null)
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null)
   const [autoLockMinutes, setAutoLockMinutesState] = useState(5)
 
@@ -124,6 +151,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const kdfRef = useRef<KdfConfig | null>(null)
   const versionRef = useRef(0)
   const pendingRef = useRef<VaultData | null>(null)
+  const conflictRef = useRef<ConflictSnapshot | null>(null)
   const savingRef = useRef(false)
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -160,12 +188,14 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 
   const lock = useCallback(() => {
     pendingRef.current = null
+    conflictRef.current = null
     wipe(secretsRef.current)
     secretsRef.current = null
     dataRef.current = null
     kdfRef.current = null
     versionRef.current = 0
     setData(null)
+    setConflict(null)
     setStatus('locked')
     setSync('idle')
   }, [])
@@ -186,48 +216,102 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     }
   }, [status, autoLockMinutes, lock])
 
+  const pullRemoteVault = useCallback(async (): Promise<ConflictSnapshot> => {
+    const secrets = secretsRef.current
+    const kdf = kdfRef.current
+    if (!secrets || !kdf) throw new Error('Vault is locked')
+
+    const remote = await pullVaultFn()
+    if (!remote) throw new Error('VAULT_MISSING')
+
+    return {
+      remote: openVaultWithFallback(
+        {
+          version: VAULT_FORMAT_VERSION,
+          kdf,
+          ciphertext: remote.ciphertext,
+          nonce: remote.nonce,
+          updatedAt: new Date(remote.updatedAt).toISOString(),
+        },
+        secrets.vaultKey,
+      ),
+      remoteVersion: remote.version,
+      remoteUpdatedAt: remote.updatedAt,
+      detectedAt: Date.now(),
+    }
+  }, [])
+
+  const enterConflict = useCallback((snapshot: ConflictSnapshot) => {
+    conflictRef.current = snapshot
+    setConflict({
+      remoteVersion: snapshot.remoteVersion,
+      remoteUpdatedAt: snapshot.remoteUpdatedAt,
+      detectedAt: snapshot.detectedAt,
+      remoteEntries: snapshot.remote.entries.length,
+      remoteTrash: snapshot.remote.trash.length,
+    })
+    setSync('conflict')
+    setError(null)
+  }, [])
+
   /**
    * Saves are immediate, not debounced: an edit is already an explicit user action
    * (Save, delete, favorite), and a debounce window is a window for data loss.
    * Writes are serialized so overlapping mutations cannot race on the version.
    */
   const flushSaves = useCallback(async () => {
-    if (savingRef.current) return
+    if (savingRef.current || conflictRef.current) return
     const secrets = secretsRef.current
     const kdf = kdfRef.current
     if (!secrets || !kdf) return
 
     savingRef.current = true
     try {
-      while (pendingRef.current) {
+      while (pendingRef.current && !conflictRef.current) {
         const next = pendingRef.current
         pendingRef.current = null
         setSync('saving')
-        const sealed = sealVault(next, secrets.vaultKey, kdf)
-        const result = await pushVaultFn({
-          data: {
-            baseVersion: versionRef.current,
-            ciphertext: sealed.ciphertext,
-            nonce: sealed.nonce,
-          },
-        })
-        versionRef.current = result.version
-        setLastSyncedAt(result.updatedAt)
-        setSync('saved')
+        try {
+          const sealed = sealVault(next, secrets.vaultKey, kdf)
+          const result = await pushVaultFn({
+            data: {
+              baseVersion: versionRef.current,
+              ciphertext: sealed.ciphertext,
+              nonce: sealed.nonce,
+            },
+          })
+          versionRef.current = result.version
+          setLastSyncedAt(result.updatedAt)
+          setSync('saved')
+        } catch (caught) {
+          if (isConflictError(caught)) {
+            // Keep the latest local snapshot. A mutation may have landed while
+            // the rejected request was in flight, and that snapshot includes it.
+            if (!pendingRef.current) pendingRef.current = next
+            try {
+              enterConflict(await pullRemoteVault())
+            } catch (pullError) {
+              setSync('error')
+              setError(friendlyError(pullError))
+            }
+            return
+          }
+
+          pendingRef.current = null
+          setSync('error')
+          setError(friendlyError(caught))
+          return
+        }
       }
-    } catch (caught) {
-      pendingRef.current = null
-      const message = friendlyError(caught)
-      setSync(message.toLowerCase().includes('changed') ? 'conflict' : 'error')
-      setError(message)
     } finally {
       savingRef.current = false
     }
-  }, [])
+  }, [enterConflict, pullRemoteVault])
 
   const queueSave = useCallback(
     (next: VaultData) => {
       pendingRef.current = next
+      if (conflictRef.current) return
       void flushSaves()
     },
     [flushSaves],
@@ -243,6 +327,82 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       queueSave(next)
     },
     [queueSave],
+  )
+
+  const resolveConflict = useCallback(
+    async (choice: ConflictChoice) => {
+      const snapshot = conflictRef.current
+      if (!snapshot) return
+
+      if (choice === 'server') {
+        dataRef.current = snapshot.remote
+        pendingRef.current = null
+        conflictRef.current = null
+        versionRef.current = snapshot.remoteVersion
+        setData(snapshot.remote)
+        setConflict(null)
+        setLastSyncedAt(snapshot.remoteUpdatedAt)
+        setSync('saved')
+        setError(null)
+        return
+      }
+
+      const local = pendingRef.current ?? dataRef.current
+      if (!local) return
+
+      let next: VaultData
+      try {
+        next = choice === 'mine' ? local : mergeVaultData(local, snapshot.remote)
+      } catch (caught) {
+        setSync('conflict')
+        setError(friendlyError(caught))
+        return
+      }
+
+      const secrets = secretsRef.current
+      const kdf = kdfRef.current
+      if (!secrets || !kdf) return
+
+      savingRef.current = true
+      setSync('saving')
+      setError(null)
+      try {
+        const sealed = sealVault(next, secrets.vaultKey, kdf)
+        const result = await pushVaultFn({
+          data: {
+            baseVersion: snapshot.remoteVersion,
+            ciphertext: sealed.ciphertext,
+            nonce: sealed.nonce,
+          },
+        })
+
+        dataRef.current = next
+        pendingRef.current = null
+        conflictRef.current = null
+        versionRef.current = result.version
+        setData(next)
+        setConflict(null)
+        setLastSyncedAt(result.updatedAt)
+        setSync('saved')
+      } catch (caught) {
+        if (isConflictError(caught)) {
+          try {
+            enterConflict(await pullRemoteVault())
+            setError('The vault changed again while resolving. Review the latest version and try again.')
+          } catch (pullError) {
+            setSync('error')
+            setError(friendlyError(pullError))
+          }
+          return
+        }
+
+        setSync('conflict')
+        setError(friendlyError(caught))
+      } finally {
+        savingRef.current = false
+      }
+    },
+    [enterConflict, pullRemoteVault],
   )
 
   const register = useCallback(async (userHandle: string, password: string) => {
@@ -268,7 +428,10 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     kdfRef.current = kdf
     versionRef.current = result.version
     dataRef.current = payload
+    pendingRef.current = null
+    conflictRef.current = null
     setData(payload)
+    setConflict(null)
     setHandle(result.handle)
     setStatus('unlocked')
     setSync('saved')
@@ -300,8 +463,11 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     secretsRef.current = { masterKey, vaultKey }
     kdfRef.current = kdf
     dataRef.current = decrypted
+    pendingRef.current = null
+    conflictRef.current = null
     versionRef.current = remote.version
     setData(decrypted)
+    setConflict(null)
     setHandle(userHandle.trim().toLowerCase())
     setStatus('unlocked')
     setSync('saved')
@@ -383,7 +549,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       const current = dataRef.current
       if (!current) throw new Error('Vault is locked')
 
-      const room = 10000 - current.entries.length
+      const room = MAX_ENTRIES - current.entries.length
       if (room <= 0) throw new Error('This vault is at the 10,000 item limit.')
 
       const seen = new Set([...current.entries, ...current.trash].map(entryFingerprint))
@@ -471,6 +637,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     data,
     sync,
     error,
+    conflict,
+    resolveConflict,
     lastSyncedAt,
     autoLockMinutes,
     setAutoLockMinutes,

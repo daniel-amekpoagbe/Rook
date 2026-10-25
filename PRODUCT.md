@@ -30,6 +30,7 @@ An original implementation, not a clone: the master password is stretched with A
 
 - Entry types: login, secure note, card, identity. Favorites, tags, search, sorting.
 - Item history (last 20 versions) and trash, both encrypted with the vault; restore a version, restore a deleted item, or remove it permanently.
+- Save conflicts are explicit: merge items from both versions, keep this tab's version, or load the server version. Local edits stay encrypted and in memory until the choice is made.
 - Client-side Argon2id (64 MiB, t=3, p=1), HKDF-SHA256 key split, XChaCha20-Poly1305 vault encryption with the KDF header bound as AAD.
 - Session cookie holds a random token; the database stores only its SHA-256. Eight failed attempts per fifteen minutes.
 - Password generator, entropy estimate, TOTP (RFC 6238), audit with optional HIBP range check.
