@@ -243,6 +243,10 @@
     letter-spacing: -0.01em;
   }
 
+  .brand-icon {
+    color: var(--brand-color);
+  }
+
   [data-theme='dark'] .avatar {
     border-color: color-mix(in oklab, hsl(var(--hue) 70% 55%) 28%, var(--surface));
     background: color-mix(in oklab, hsl(var(--hue) 70% 55%) 18%, var(--surface));
@@ -252,6 +256,49 @@
   [data-theme='dark'] .btn-danger-solid {
     color: var(--on-primary);
   }
+}
+
+.lock-screen {
+  --canvas: #171717;
+  --surface: #202020;
+  --surface-2: #1b1b1b;
+  --surface-3: #292929;
+  --ink: #f4f4f4;
+  --ink-2: #b7b7b7;
+  --ink-3: #898989;
+  --hairline: #383838;
+  --hairline-strong: #585858;
+  --primary: #1983ff;
+  --primary-hover: #0d70e8;
+  --primary-wash: rgb(25 131 255 / 0.14);
+  --on-primary: #ffffff;
+  --danger: #ff8178;
+  --danger-wash: rgb(255 129 120 / 0.12);
+  color-scheme: dark;
+}
+
+.lock-guide {
+  --canvas: #e9effc;
+  --surface: #f6f8ff;
+  --surface-2: #e9effc;
+  --surface-3: #dfe7f7;
+  --ink: #19233a;
+  --ink-2: #46536d;
+  --ink-3: #64718b;
+  --hairline: #cad5e9;
+  --hairline-strong: #afbdd6;
+  --primary: #146cff;
+  --primary-hover: #0c58d8;
+  --primary-wash: rgb(20 108 255 / 0.12);
+  --on-primary: #ffffff;
+  color: var(--ink);
+  background: #e9effc;
+}
+
+.lock-guide-art {
+  background:
+    linear-gradient(135deg, rgb(255 255 255 / 0.6), transparent 55%),
+    #dfe7f7;
 }
 
 /* One authored entrance, used only for surfaces that arrive on top of the page. */
