@@ -153,6 +153,38 @@ export function touch(entry: Entry): Entry {
   return { ...entry, updatedAt: new Date().toISOString() }
 }
 
+/**
+ * A stable identity for duplicate detection when importing. Imported managers
+ * use their own IDs, so the same login must be recognised by its content.
+ */
+export function entryFingerprint(entry: Entry): string {
+  const base = [entry.type, entry.title.trim().toLowerCase()]
+  if (entry.type === 'login') {
+    return [
+      ...base,
+      entry.username?.trim().toLowerCase() ?? '',
+      entry.url?.trim().toLowerCase() ?? '',
+    ].join('\u0000')
+  }
+  if (entry.type === 'note') {
+    return [...base, entry.notes?.trim().toLowerCase() ?? ''].join('\u0000')
+  }
+  if (entry.type === 'card') {
+    return [
+      ...base,
+      entry.card?.number?.trim() ?? '',
+      entry.card?.holder?.trim().toLowerCase() ?? '',
+      entry.card?.expiry?.trim() ?? '',
+    ].join('\u0000')
+  }
+  return [
+    ...base,
+    entry.identity?.fullName?.trim().toLowerCase() ?? '',
+    entry.identity?.email?.trim().toLowerCase() ?? '',
+    entry.identity?.phone?.trim() ?? '',
+  ].join('\u0000')
+}
+
 export function matchesQuery(entry: Entry, query: string): boolean {
   const q = query.trim().toLowerCase()
   if (!q) return true

@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import { IMPORT_SOURCE_LABELS, parseImportText, type ImportResult } from '~/lib/import'
 import { scorePassword } from '~/lib/strength'
 import { friendlyError, useVault } from '~/lib/vault-context'
 import { Icon, Sheet, StrengthMeter, cx } from './ui'
@@ -40,6 +41,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     exportBackup,
     exportCsv,
     importBackup,
+    importEntries,
     signOut,
     sync,
     lastSyncedAt,
@@ -53,7 +55,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const [pendingCsv, setPendingCsv] = useState(false)
   const [pendingImport, setPendingImport] = useState<{ file: File; password: string } | null>(null)
   const [importBusy, setImportBusy] = useState(false)
+  const [pendingPlainImport, setPendingPlainImport] = useState<{ fileName: string; result: ImportResult } | null>(null)
+  const [plainImportBusy, setPlainImportBusy] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
+  const plainFileInput = useRef<HTMLInputElement>(null)
 
   const strength = scorePassword(next)
 
@@ -140,12 +145,50 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     }
   }
 
+  async function choosePlainImportFile(file: File) {
+    setMessage(null)
+    setPendingPlainImport(null)
+    try {
+      const result = parseImportText(await file.text())
+      if (result.entries.length === 0) {
+        throw new Error('No importable items were found in that file.')
+      }
+      setPendingPlainImport({ fileName: file.name, result })
+    } catch (caught) {
+      setMessage({ tone: 'error', text: friendlyError(caught) })
+    }
+  }
+
+  function confirmPlainImport() {
+    if (!pendingPlainImport) return
+    setPlainImportBusy(true)
+    try {
+      const { added, skipped } = importEntries(pendingPlainImport.result.entries)
+      const skippedTotal = pendingPlainImport.result.skipped + skipped
+      const source = IMPORT_SOURCE_LABELS[pendingPlainImport.result.source]
+      setPendingPlainImport(null)
+      setMessage({
+        tone: 'ok',
+        text: `Imported ${added} item${added === 1 ? '' : 's'} from ${source}.${
+          skippedTotal > 0
+            ? ` Skipped ${skippedTotal} duplicate or unsupported item${skippedTotal === 1 ? '' : 's'}.`
+            : ''
+        }`,
+      })
+    } catch (caught) {
+      setMessage({ tone: 'error', text: friendlyError(caught) })
+    } finally {
+      setPlainImportBusy(false)
+    }
+  }
+
   function close() {
     setCurrent('')
     setNext('')
     setConfirm('')
     setPendingCsv(false)
     setPendingImport(null)
+    setPendingPlainImport(null)
     setMessage(null)
     onClose()
   }
@@ -350,6 +393,82 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         <p className="mt-2 text-[11px] leading-relaxed text-faint">
           The encrypted backup is a self-contained copy of the vault blob, including its KDF header. It is safe to store
           anywhere you trust, as long as you remember the master password.
+        </p>
+      </Section>
+
+      <Section
+        title="Import from another manager"
+        description="Bring logins, notes, cards, and identities over from Chrome, 1Password, or Bitwarden. Files are parsed in this tab and never uploaded."
+      >
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="btn-secondary h-8 px-2.5 text-[12px]"
+            onClick={() => plainFileInput.current?.click()}
+          >
+            <Icon name="upload" size={13} /> Choose CSV or JSON
+          </button>
+          <input
+            ref={plainFileInput}
+            type="file"
+            accept=".csv,.json"
+            aria-label="Import CSV or JSON file"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0]
+              if (file) void choosePlainImportFile(file)
+              event.target.value = ''
+            }}
+          />
+        </div>
+
+        {pendingPlainImport && (
+          <div className="mt-3 rounded-lg border border-line bg-surface-2 px-3 py-2.5">
+            <p className="text-[11.5px] leading-relaxed text-muted">
+              <span className="font-medium text-ink">{pendingPlainImport.fileName}</span> looks like a{' '}
+              <span className="font-medium text-ink">{IMPORT_SOURCE_LABELS[pendingPlainImport.result.source]}</span>{' '}
+              export with{' '}
+              <span className="font-medium text-ink">
+                {pendingPlainImport.result.entries.length}{' '}
+                {pendingPlainImport.result.entries.length === 1 ? 'item' : 'items'}
+              </span>
+              .
+            </p>
+            {pendingPlainImport.result.warnings.length > 0 && (
+              <p className="mt-1 text-[11px] leading-relaxed text-warn">
+                {pendingPlainImport.result.warnings.join(' ')}
+              </p>
+            )}
+            <p className="mt-1 truncate text-[11px] text-faint">
+              {pendingPlainImport.result.entries
+                .slice(0, 4)
+                .map((entry) => entry.title)
+                .join(' · ')}
+              {pendingPlainImport.result.entries.length > 4 ? ' …' : ''}
+            </p>
+            <div className="mt-2 flex gap-2">
+              <button
+                type="button"
+                className="btn-secondary h-8 px-2.5 text-[12px]"
+                onClick={() => setPendingPlainImport(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-primary h-8 px-2.5 text-[12px]"
+                onClick={confirmPlainImport}
+                disabled={plainImportBusy}
+              >
+                {plainImportBusy ? 'Importing…' : 'Import'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        <p className="mt-2 text-[11px] leading-relaxed text-faint">
+          Supported: Chrome CSV, 1Password CSV, Bitwarden JSON/CSV, and Rook CSV. Duplicate items are skipped by title,
+          username, and URL.
         </p>
       </Section>
 

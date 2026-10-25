@@ -17,6 +17,7 @@ import {
 } from './crypto'
 import {
   emptyVault,
+  entryFingerprint,
   isSupportedVaultFormat,
   openVault,
   openVaultWithFallback,
@@ -95,6 +96,7 @@ interface VaultContextValue {
   exportBackup: () => EncryptedVault | null
   exportCsv: () => string | null
   importBackup: (json: string, password: string) => Promise<void>
+  importEntries: (entries: Entry[]) => { added: number; skipped: number }
   clearError: () => void
 }
 
@@ -374,6 +376,40 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     return [header, ...rows].join('\n')
   }, [])
 
+  const importEntries = useCallback(
+    (entries: Entry[]) => {
+      const current = dataRef.current
+      if (!current) throw new Error('Vault is locked')
+
+      const room = 10000 - current.entries.length
+      if (room <= 0) throw new Error('This vault is at the 10,000 item limit.')
+
+      const seen = new Set(current.entries.map(entryFingerprint))
+      const accepted: Entry[] = []
+      let skipped = 0
+
+      for (const entry of entries) {
+        const fingerprint = entryFingerprint(entry)
+        if (seen.has(fingerprint) || accepted.length >= room) {
+          skipped += 1
+          continue
+        }
+        seen.add(fingerprint)
+        accepted.push(entry)
+      }
+
+      if (accepted.length > 0) {
+        const next: VaultData = { ...current, entries: [...current.entries, ...accepted] }
+        dataRef.current = next
+        setData(next)
+        queueSave(next)
+      }
+
+      return { added: accepted.length, skipped }
+    },
+    [queueSave],
+  )
+
   const importBackup = useCallback(
     async (json: string, password: string) => {
       const parsed = JSON.parse(json) as EncryptedVault
@@ -414,6 +450,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     exportBackup,
     exportCsv,
     importBackup,
+    importEntries,
     clearError: () => setError(null),
   }
 
