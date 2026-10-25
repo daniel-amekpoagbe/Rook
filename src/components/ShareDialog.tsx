@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { createShareFn, listSharesFn, revokeShareFn } from '~/server/api'
 import {
   formatShareRemaining,
@@ -9,7 +9,8 @@ import {
   type SharePayload,
 } from '~/lib/share'
 import type { Entry } from '~/lib/vault'
-import { Icon, Modal, Spinner, useCopyToClipboard } from './ui'
+import { Icon, Modal, Spinner, cx, useCopyToClipboard } from './ui'
+import { BrandIcon, brandCssVars, brandForEntry } from './BrandIcon'
 
 interface ShareSummary {
   id: string
@@ -143,6 +144,8 @@ export function ShareDialog({
   const otherShares = visibleCreated
     ? activeShares.filter((share) => share.id !== visibleCreated.id)
     : activeShares
+  const brand = brandForEntry(entry.url, entry.title)
+  const initial = entry.title.trim().charAt(0).toUpperCase()
 
   return (
     <Modal
@@ -153,24 +156,32 @@ export function ShareDialog({
       width="max-w-md"
     >
       <div className="space-y-4">
-        <div className="flex items-start gap-2.5 rounded-lg border border-line bg-surface-2 px-3 py-2.5 text-[11.5px] leading-relaxed text-muted">
-          <Icon name="lock" size={14} className="mt-0.5 shrink-0 text-faint" />
-          <span>
-            The password is encrypted in this tab. The decryption key travels only in the link
-            fragment, so Rook's server cannot read it.
+        <div className="flex items-center gap-3 rounded-xl border border-line bg-surface-2 p-3">
+          <span
+            className={cx('avatar shrink-0', brand && 'avatar-brand')}
+            style={{
+              ...(brand ? brandCssVars(brand) : { '--hue': 214 }),
+              width: 40,
+              height: 40,
+              fontSize: 14,
+            } as CSSProperties}
+            aria-hidden="true"
+          >
+            {brand ? <BrandIcon brand={brand} size={24} /> : initial || <Icon name="key" size={18} />}
           </span>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[13px] font-medium text-ink">{entry.title}</p>
+            <p className="truncate text-[11.5px] text-muted">{entry.username || 'Login'}</p>
+          </div>
+          <span className="chip">3 days</span>
         </div>
 
         {visibleCreated ? (
-          <div className="rounded-lg border border-success/25 bg-success/5 p-3">
+          <div className="rounded-xl border border-success/25 bg-success/5 p-3">
             <div className="flex items-center gap-2 text-[12px] font-medium text-ink">
               <Icon name="checkCircle" size={15} className="text-success" />
               Link ready
             </div>
-            <p className="mt-1 text-[11px] leading-relaxed text-muted">
-              Copy it now. Rook does not store the key, so this link cannot be shown again after you
-              close this dialog.
-            </p>
             <div className="mt-2.5 flex gap-1.5">
               <input
                 readOnly
@@ -188,68 +199,75 @@ export function ShareDialog({
                 {copied === 'link' ? 'Copied' : 'Copy'}
               </button>
             </div>
-            <p className="mt-2 text-[10.5px] text-faint">
-              Expires in {formatShareRemaining(visibleCreated.expiresAt, now)} ·{' '}
-              {new Date(visibleCreated.expiresAt).toLocaleString()}
+            <div className="mt-2 flex items-center justify-between gap-3">
+              <p className="text-[10.5px] text-faint">
+                Expires in {formatShareRemaining(visibleCreated.expiresAt, now)}
+              </p>
+              <button
+                type="button"
+                className="text-[11px] font-medium text-danger hover:underline"
+                onClick={() => void revoke(visibleCreated.id)}
+                disabled={busy}
+              >
+                Revoke link
+              </button>
+            </div>
+            <p className="mt-2 text-[10.5px] leading-relaxed text-faint">
+              Copy it now. Rook does not store the key, so this link cannot be shown again.
             </p>
-            <button
-              type="button"
-              className="btn-danger mt-2 h-7 px-2 text-[11px]"
-              onClick={() => void revoke(visibleCreated.id)}
-              disabled={busy}
-            >
-              Revoke this link
-            </button>
           </div>
         ) : (
-          <button
-            type="button"
-            className="btn-primary w-full"
-            onClick={() => void createLink()}
-            disabled={busy}
-          >
-            {busy ? <Spinner size={14} /> : <Icon name="link" size={14} />}
-            {busy ? 'Creating link…' : 'Create 3-day link'}
-          </button>
+          <div>
+            <button
+              type="button"
+              className="btn-primary w-full"
+              onClick={() => void createLink()}
+              disabled={busy}
+            >
+              {busy ? <Spinner size={14} /> : <Icon name="link" size={14} />}
+              {busy ? 'Creating link…' : 'Create link'}
+            </button>
+            <p className="mt-2 text-center text-[10.5px] leading-relaxed text-faint">
+              The decryption key stays in the link. Rook cannot read it.
+            </p>
+          </div>
         )}
 
-        <div>
-          <div className="flex items-baseline justify-between gap-3">
-            <h3 className="text-[11.5px] font-medium text-muted">Active links</h3>
-            {loading && <Spinner size={12} className="text-faint" />}
-          </div>
-          <div className="mt-1.5 overflow-hidden rounded-lg border border-line bg-surface">
-            {otherShares.length === 0 && !loading ? (
-              <p className="px-3 py-3 text-[11.5px] text-faint">No other active links for this item.</p>
-            ) : (
-              otherShares.map((share) => (
-                <div
-                  key={share.id}
-                  className="flex items-center justify-between gap-3 border-b border-line px-3 py-2.5 last:border-0"
-                >
-                  <div className="flex min-w-0 items-center gap-2">
-                    <Icon name="link" size={13} className="shrink-0 text-faint" />
-                    <span className="truncate text-[11.5px] text-muted">
-                      Expires in {formatShareRemaining(share.expiresAt, now)}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    className="btn-danger h-7 shrink-0 px-2 text-[11px]"
-                    onClick={() => void revoke(share.id)}
-                    disabled={busy}
+        {(loading || otherShares.length > 0) && (
+          <div>
+            <div className="flex items-baseline justify-between gap-3">
+              <h3 className="text-[11px] font-medium text-muted">Active links</h3>
+              {loading && <Spinner size={12} className="text-faint" />}
+            </div>
+            <div className="mt-1.5 overflow-hidden rounded-lg border border-line bg-surface">
+              {otherShares.length === 0 ? (
+                <p className="px-3 py-3 text-[11.5px] text-faint">Loading…</p>
+              ) : (
+                otherShares.map((share) => (
+                  <div
+                    key={share.id}
+                    className="flex items-center justify-between gap-3 border-b border-line px-3 py-2.5 last:border-0"
                   >
-                    Revoke
-                  </button>
-                </div>
-              ))
-            )}
+                    <span className="inline-flex min-w-0 items-center gap-2 text-[11.5px] text-muted">
+                      <Icon name="link" size={13} className="shrink-0 text-faint" />
+                      <span className="truncate">
+                        Expires in {formatShareRemaining(share.expiresAt, now)}
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      className="text-[11px] font-medium text-danger hover:underline disabled:opacity-45"
+                      onClick={() => void revoke(share.id)}
+                      disabled={busy}
+                    >
+                      Revoke
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
-          <p className="mt-1.5 text-[10.5px] leading-relaxed text-faint">
-            Existing link keys are not stored, so only the link created in this dialog can be copied
-            again.
-          </p>
-        </div>
+        )}
 
         {error && (
           <div className="flex items-start gap-2 rounded-lg border border-danger/20 bg-danger-soft px-3 py-2 text-[11.5px] leading-relaxed text-danger">
@@ -258,10 +276,9 @@ export function ShareDialog({
           </div>
         )}
 
-        <div className="border-t border-line pt-3 text-[10.5px] leading-relaxed text-faint">
-          Anyone with the link can view this password until it expires. Share it only with someone
-          you trust. Deleting the item does not revoke active links; revoke them here first.
-        </div>
+        <p className="border-t border-line pt-3 text-center text-[10.5px] leading-relaxed text-faint">
+          Anyone with the link can open this password.
+        </p>
       </div>
     </Modal>
   )
