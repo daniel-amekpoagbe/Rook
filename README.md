@@ -136,6 +136,8 @@ Data
   `rook.vault` format, and pre-rename `keynest.vault` backups still import)
 - CSV export for portability (with an explicit plaintext warning)
 - Encrypted backup import, merged by item id
+- Import from Chrome CSV, 1Password CSV, Bitwarden JSON/CSV, and Rook CSV; parsed locally,
+  with duplicate detection and a preview before anything is saved
 - Optimistic concurrency: the server rejects a save based on a stale version (`CONFLICT`)
 
 Interface
@@ -171,7 +173,7 @@ empty and unlocks immediately.
 ### Tests
 
 ```bash
-npm test           # crypto, vault, generator, strength, TOTP (RFC 6238 vectors)
+npm test           # crypto, vault, generator, strength, TOTP, and import parsers
 npm run typecheck
 ```
 
@@ -187,6 +189,7 @@ area and is run with Playwright against a live server.
 src/lib/crypto.ts          Argon2id, HKDF split, auth proof, AEAD helpers
 src/lib/vault.ts           entry schema (zod), seal/open, header AAD, search/sort
 src/lib/vault-context.tsx  unlock/register/save/re-key state machine, auto-lock, exports
+src/lib/import.ts          Chrome/1Password/Bitwarden/Rook parsers and duplicate fingerprints
 src/lib/generator.ts       unbiased CSPRNG password generation + entropy
 src/lib/strength.ts        entropy estimator with sequence/repeat/common penalties
 src/lib/totp.ts            base32 + RFC 6238 via WebCrypto
@@ -210,23 +213,21 @@ src/routes/__root.tsx      document shell; VaultProvider lives above the router
 
 ## 7. Roadmap toward "80% of 1Password"
 
-Done: the vault, the crypto, the item types, TOTP, audit, generator, backups, rotation.
+Done: the vault, the crypto, the item types, TOTP, audit, generator, backups, rotation, and
+import from Chrome, 1Password, Bitwarden, and Rook CSV.
 
 Next, roughly in order of value:
 
-1. **Browser extension + autofill** — the single biggest UX gap. A WebExtension that talks to
-   this origin and fills credentials on matching domains.
-2. **Import from other managers** — 1Password CSV, Bitwarden JSON, Chrome CSV.
-3. **Item history and trash** — keep previous versions encrypted; restore instead of delete.
-4. **Passkeys / WebAuthn** — store credentials and act as an authenticator.
-5. **Attachments** — encrypt file blobs separately, same key hierarchy.
-6. **Multi-device conflict UI** — the server already detects conflicts; surface a merge view.
-7. **Sharing** — public-key envelopes per recipient, so a shared item does not require
+1. **Item history and trash** — keep previous versions encrypted; restore instead of delete.
+2. **Passkeys / WebAuthn** — store credentials and act as an authenticator.
+3. **Attachments** — encrypt file blobs separately, same key hierarchy.
+4. **Multi-device conflict UI** — the server already detects conflicts; surface a merge view.
+5. **Sharing** — public-key envelopes per recipient, so a shared item does not require
    sharing the vault key.
-8. **Email breach monitoring** — periodic HIBP checks for account addresses.
+6. **Email breach monitoring** — periodic HIBP checks for account addresses.
 
-Deliberately out of scope for a personal build: team administration, SSO/SCIM, travel mode,
-and a hosted service.
+Deliberately out of scope for now: a browser extension and autofill. Also out of scope for
+this personal build: team administration, SSO/SCIM, travel mode, and a hosted service.
 
 ---
 

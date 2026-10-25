@@ -32,6 +32,7 @@ An original implementation, not a clone: the master password is stretched with A
 - Client-side Argon2id (64 MiB, t=3, p=1), HKDF-SHA256 key split, XChaCha20-Poly1305 vault encryption with the KDF header bound as AAD.
 - Session cookie holds a random token; the database stores only its SHA-256. Eight failed attempts per fifteen minutes.
 - Password generator, entropy estimate, TOTP (RFC 6238), audit with optional HIBP range check.
+- Local import from Chrome CSV, 1Password CSV, Bitwarden JSON/CSV, and Rook CSV, with a preview and duplicate detection.
 - Single vault per account. No password recovery. No multi-device sync. Handles may be email addresses.
 - TanStack Start + React 19 + Vite + Tailwind v4 on the client; Node with `node:sqlite` on the server.
 - Iconography must come from `react-icons` (owner directive). No emoji standing in for icons.
@@ -47,7 +48,7 @@ An original implementation, not a clone: the master password is stretched with A
 
 ## Evidence on Hand
 
-- Working application at `src/`, with passing unit tests and a Playwright end-to-end flow.
+- Working application at `src/`, with passing unit tests (including the import parsers) and a Playwright end-to-end flow.
 - `README.md` documents the architecture and threat model.
 - No real user data, testimonials, benchmarks, or press. Any demo entries are synthetic.
 
@@ -66,4 +67,5 @@ Keyboard-first operation with visible focus. Body text meets WCAG AA contrast. C
 ## Open Decisions
 
 - Whether this is ever deployed beyond the owner's machine.
-- Whether import/export or multi-device sync is in scope later.
+- Whether multi-device sync is in scope later.
+- Browser extension and autofill are explicitly out of scope for now.
