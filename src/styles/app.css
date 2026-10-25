@@ -278,27 +278,27 @@
 }
 
 .lock-guide {
-  --canvas: #e9effc;
-  --surface: #f6f8ff;
-  --surface-2: #e9effc;
-  --surface-3: #dfe7f7;
+  --canvas: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #ffffff;
+  --surface-3: #f2f4f8;
   --ink: #19233a;
   --ink-2: #46536d;
   --ink-3: #64718b;
-  --hairline: #cad5e9;
-  --hairline-strong: #afbdd6;
+  --hairline: #d9dee8;
+  --hairline-strong: #b9c2d2;
   --primary: #146cff;
   --primary-hover: #0c58d8;
   --primary-wash: rgb(20 108 255 / 0.12);
   --on-primary: #ffffff;
   color: var(--ink);
-  background: #e9effc;
+  background: #ffffff;
 }
 
 .lock-guide-art {
   background:
     linear-gradient(135deg, rgb(255 255 255 / 0.6), transparent 55%),
-    #dfe7f7;
+    #f2f4f8;
 }
 
 /* One authored entrance, used only for surfaces that arrive on top of the page. */
