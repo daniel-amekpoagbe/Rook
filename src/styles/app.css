@@ -259,22 +259,22 @@
 }
 
 .lock-screen {
-  --canvas: #171717;
-  --surface: #202020;
-  --surface-2: #1b1b1b;
-  --surface-3: #292929;
-  --ink: #f4f4f4;
-  --ink-2: #b7b7b7;
-  --ink-3: #898989;
-  --hairline: #383838;
-  --hairline-strong: #585858;
-  --primary: #1983ff;
-  --primary-hover: #0d70e8;
-  --primary-wash: rgb(25 131 255 / 0.14);
+  --canvas: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #ffffff;
+  --surface-3: #f5f7fa;
+  --ink: #111827;
+  --ink-2: #5a6475;
+  --ink-3: #697586;
+  --hairline: #e1e5eb;
+  --hairline-strong: #c7ced9;
+  --primary: #146cff;
+  --primary-hover: #0c58d8;
+  --primary-wash: rgb(20 108 255 / 0.1);
   --on-primary: #ffffff;
-  --danger: #ff8178;
-  --danger-wash: rgb(255 129 120 / 0.12);
-  color-scheme: dark;
+  --danger: #b42318;
+  --danger-wash: #fef3f2;
+  color-scheme: light;
 }
 
 .lock-guide {
