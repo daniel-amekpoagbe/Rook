@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { useVault } from '~/lib/vault-context'
+import { useVault, type ConflictChoice } from '~/lib/vault-context'
 import { generateTotp, isValidTotpSecret, type TotpResult } from '~/lib/totp'
 import {
   deleteTrashedEntry,
@@ -462,7 +462,9 @@ function NavGroupLabel({ children }: { children: React.ReactNode }) {
 }
 
 export function VaultApp() {
-  const { data, handle, mutate, lock, sync, error, lastSyncedAt, clearError } = useVault()
+  const { data, handle, mutate, lock, sync, error, conflict, resolveConflict, lastSyncedAt, clearError } =
+    useVault()
+  const [resolving, setResolving] = useState<ConflictChoice | null>(null)
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<Filter>('all')
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -556,6 +558,15 @@ export function VaultApp() {
 
   function toggleFavorite(entry: Entry) {
     saveEntry(touch({ ...entry, favorite: !entry.favorite }), false)
+  }
+
+  async function resolveVaultConflict(choice: ConflictChoice) {
+    setResolving(choice)
+    try {
+      await resolveConflict(choice)
+    } finally {
+      setResolving(null)
+    }
   }
 
   function startCreate(type: EntryType) {
@@ -1105,6 +1116,87 @@ export function VaultApp() {
             <Icon name="trash" size={14} /> Delete permanently
           </button>
         </div>
+      </Modal>
+
+      <Modal
+        open={Boolean(conflict)}
+        onClose={() => {}}
+        dismissible={false}
+        title="Resolve vault conflict"
+        description="Another session saved changes to this vault."
+        width="max-w-md"
+      >
+        <p className="text-[13px] leading-relaxed text-muted">
+          This vault changed in another session while this tab had unsaved edits. Nothing in this tab has been
+          discarded yet.
+        </p>
+
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          <div className="rounded-lg border border-line bg-surface-2 px-3 py-2.5">
+            <p className="text-[10.5px] font-semibold tracking-[0.08em] text-faint uppercase">This tab</p>
+            <p className="mt-1 text-[13px] font-medium text-ink">
+              {entries.length} {entries.length === 1 ? 'item' : 'items'}
+            </p>
+            <p className="text-[11px] text-muted">
+              {trash.length} in trash
+            </p>
+          </div>
+          <div className="rounded-lg border border-line bg-surface-2 px-3 py-2.5">
+            <p className="text-[10.5px] font-semibold tracking-[0.08em] text-faint uppercase">Server</p>
+            <p className="mt-1 text-[13px] font-medium text-ink">
+              {conflict?.remoteEntries ?? 0} {(conflict?.remoteEntries ?? 0) === 1 ? 'item' : 'items'}
+            </p>
+            <p className="text-[11px] text-muted">
+              {conflict?.remoteTrash ?? 0} in trash · {timeAgo(conflict?.remoteUpdatedAt ?? null)}
+            </p>
+          </div>
+        </div>
+
+        <p className="mt-4 text-[12px] leading-relaxed text-muted">
+          <span className="font-medium text-ink">Merge items</span> keeps items added on either side. If the same
+          item changed in both versions, the newest edit wins and the other version stays in its history.
+        </p>
+
+        {error && (
+          <div className="mt-3 flex items-start gap-2 rounded-lg border border-danger/20 bg-danger-soft px-3 py-2 text-[12px] text-danger">
+            <Icon name="alert" size={14} className="mt-0.5 shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
+
+        <div className="mt-5 space-y-2">
+          <button
+            type="button"
+            className="btn-primary h-9 w-full text-[12.5px]"
+            disabled={resolving !== null}
+            onClick={() => void resolveVaultConflict('merge')}
+          >
+            {resolving === 'merge' ? 'Merging…' : 'Merge items'}
+            <span className="rounded-full bg-white/15 px-2 py-0.5 text-[10px] font-medium">Recommended</span>
+          </button>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              className="btn-secondary h-9 text-[12.5px]"
+              disabled={resolving !== null}
+              onClick={() => void resolveVaultConflict('mine')}
+            >
+              {resolving === 'mine' ? 'Keeping…' : 'Keep mine'}
+            </button>
+            <button
+              type="button"
+              className="btn-secondary h-9 text-[12.5px]"
+              disabled={resolving !== null}
+              onClick={() => void resolveVaultConflict('server')}
+            >
+              {resolving === 'server' ? 'Loading…' : 'Use server'}
+            </button>
+          </div>
+        </div>
+
+        <p className="mt-3 text-[11px] leading-relaxed text-faint">
+          Keep mine overwrites the server version. Use server discards unsaved changes in this tab.
+        </p>
       </Modal>
     </div>
   )

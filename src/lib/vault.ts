@@ -6,6 +6,7 @@ export const VAULT_FORMAT = 'rook.vault'
 export const LEGACY_VAULT_FORMAT = 'keynest.vault'
 export const VAULT_FORMAT_VERSION = 1
 export const VAULT_DATA_VERSION = 3
+export const MAX_ENTRIES = 10000
 export const MAX_HISTORY_VERSIONS = 20
 export const MAX_TRASH_ITEMS = 1000
 
@@ -56,12 +57,12 @@ export type Entry = z.infer<typeof entrySchema>
 /** Version 2 is the pre-history schema; it is migrated on read. */
 export const legacyVaultDataSchema = z.object({
   version: z.literal(2),
-  entries: z.array(entrySchema).max(10000),
+  entries: z.array(entrySchema).max(MAX_ENTRIES),
 })
 
 export const vaultDataSchema = z.object({
   version: z.literal(VAULT_DATA_VERSION),
-  entries: z.array(entrySchema).max(10000),
+  entries: z.array(entrySchema).max(MAX_ENTRIES),
   trash: z.array(entrySchema).max(MAX_TRASH_ITEMS).default([]),
   history: z.record(z.string(), z.array(entrySchema).max(MAX_HISTORY_VERSIONS)).default({}),
 })
@@ -331,6 +332,129 @@ export function restoreVersion(
       item.id === entryId ? touch(activeCopy(version)) : item,
     ),
     history: recordHistory(data.history, current),
+  }
+}
+
+interface VaultItemState {
+  entry: Entry
+  deleted: boolean
+  at: string
+}
+
+function itemStates(data: VaultData): Map<string, VaultItemState> {
+  const states = new Map<string, VaultItemState>()
+  for (const entry of data.entries) {
+    states.set(entry.id, { entry, deleted: false, at: entry.updatedAt })
+  }
+  for (const entry of data.trash) {
+    states.set(entry.id, {
+      entry,
+      deleted: true,
+      at: entry.deletedAt ?? entry.updatedAt,
+    })
+  }
+  return states
+}
+
+/**
+ * Pick the newest state for one id. Active items use `updatedAt`; trashed
+ * items use `deletedAt`. An edit made after a deletion on the other side
+ * restores the item, while a deletion newer than the other side's edit wins.
+ */
+function chooseItemState(
+  local: VaultItemState | undefined,
+  remote: VaultItemState | undefined,
+): VaultItemState | undefined {
+  if (!local) return remote
+  if (!remote) return local
+
+  if (local.deleted === remote.deleted) {
+    return local.at.localeCompare(remote.at) >= 0 ? local : remote
+  }
+
+  const active = local.deleted ? remote : local
+  const deleted = local.deleted ? local : remote
+  return active.at.localeCompare(deleted.at) >= 0 ? active : deleted
+}
+
+/**
+ * Reconcile two vault snapshots after a server version conflict.
+ *
+ * Items are merged by id, so additions from either side survive. When both
+ * sides hold the same id, the newest change wins. Concurrent edits to the same
+ * active item keep the losing content in that item's version history.
+ */
+export function mergeVaultData(local: VaultData, remote: VaultData): VaultData {
+  const localStates = itemStates(local)
+  const remoteStates = itemStates(remote)
+  const ids = new Set([...localStates.keys(), ...remoteStates.keys()])
+  const entries: Entry[] = []
+  const trash: Entry[] = []
+  const losingVersions: Entry[] = []
+
+  for (const id of ids) {
+    const localState = localStates.get(id)
+    const remoteState = remoteStates.get(id)
+    const winner = chooseItemState(localState, remoteState)
+    if (!winner) continue
+
+    if (winner.deleted) {
+      trash.push(winner.entry)
+    } else {
+      entries.push(activeCopy(winner.entry))
+    }
+
+    if (localState && remoteState && !localState.deleted && !remoteState.deleted) {
+      const loser = winner === localState ? remoteState : localState
+      if (entryContentKey(loser.entry) !== entryContentKey(winner.entry)) {
+        losingVersions.push(loser.entry)
+      }
+    }
+  }
+
+  if (entries.length > MAX_ENTRIES) {
+    throw new Error(
+      'Merging these vaults would exceed the 10,000 item limit. Use Keep mine or Use server instead.',
+    )
+  }
+
+  const history: VaultHistory = {}
+  const historyIds = new Set([...Object.keys(local.history), ...Object.keys(remote.history)])
+  for (const id of historyIds) {
+    const byUpdatedAt = new Map<string, Entry>()
+    for (const version of [...(local.history[id] ?? []), ...(remote.history[id] ?? [])]) {
+      if (!byUpdatedAt.has(version.updatedAt)) byUpdatedAt.set(version.updatedAt, version)
+    }
+    const versions = [...byUpdatedAt.values()]
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, MAX_HISTORY_VERSIONS)
+    if (versions.length > 0) history[id] = versions
+  }
+
+  for (const version of losingVersions) {
+    const versions = history[version.id] ?? []
+    if (versions.some((item) => entryContentKey(item) === entryContentKey(version))) continue
+    history[version.id] = [activeCopy(version), ...versions]
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, MAX_HISTORY_VERSIONS)
+  }
+
+  const mergedTrash = [...trash]
+    .sort((a, b) => (b.deletedAt ?? b.updatedAt).localeCompare(a.deletedAt ?? a.updatedAt))
+    .slice(0, MAX_TRASH_ITEMS)
+  const keptIds = new Set([
+    ...entries.map((entry) => entry.id),
+    ...mergedTrash.map((entry) => entry.id),
+  ])
+  for (const id of Object.keys(history)) {
+    if (!keptIds.has(id)) delete history[id]
+  }
+
+  return {
+    version: VAULT_DATA_VERSION,
+    entries,
+    trash: mergedTrash,
+    history,
   }
 }
 

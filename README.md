@@ -141,6 +141,8 @@ Data
 - Import from Chrome CSV, 1Password CSV, Bitwarden JSON/CSV, and Rook CSV; parsed locally,
   with duplicate detection and a preview before anything is saved
 - Optimistic concurrency: the server rejects a save based on a stale version (`CONFLICT`)
+- Conflict recovery: merge items from both versions, keep this tab's version, or load the
+  server version without discarding the tab's encrypted state until the choice is made
 
 Interface
 
@@ -175,13 +177,14 @@ empty and unlocks immediately.
 ### Tests
 
 ```bash
-npm test           # crypto, vault, history/trash migration, generator, strength, TOTP, and import parsers
+npm test           # crypto, vault, conflict merge, history/trash migration, generator, strength, TOTP, and import parsers
 npm run typecheck
 ```
 
-The end-to-end browser flow (register → save → reload locks → wrong password rejected →
-correct password decrypts → generator) lives outside the repo in the development scratch
-area and is run with Playwright against a live server.
+The end-to-end browser flows (register → save → reload locks → wrong password rejected →
+correct password decrypts → generator, plus two-tab conflict merge/keep/use-server) live
+outside the repo in the development scratch area and are run with Playwright against a live
+server.
 
 ---
 
@@ -189,8 +192,8 @@ area and is run with Playwright against a live server.
 
 ```
 src/lib/crypto.ts          Argon2id, HKDF split, auth proof, AEAD helpers
-src/lib/vault.ts           entry schema (zod), seal/open, header AAD, history/trash, search/sort
-src/lib/vault-context.tsx  unlock/register/save/re-key state machine, auto-lock, exports
+src/lib/vault.ts           entry schema (zod), seal/open, header AAD, history/trash, conflict merge, search/sort
+src/lib/vault-context.tsx  unlock/register/save/conflict/re-key state machine, auto-lock, exports
 src/lib/import.ts          Chrome/1Password/Bitwarden/Rook parsers and duplicate fingerprints
 src/lib/generator.ts       unbiased CSPRNG password generation + entropy
 src/lib/strength.ts        entropy estimator with sequence/repeat/common penalties
@@ -216,16 +219,16 @@ src/routes/__root.tsx      document shell; VaultProvider lives above the router
 ## 7. Roadmap toward "80% of 1Password"
 
 Done: the vault, the crypto, the item types, TOTP, audit, generator, backups, rotation,
-item history, trash, and import from Chrome, 1Password, Bitwarden, and Rook CSV.
+item history, trash, conflict recovery, and import from Chrome, 1Password, Bitwarden, and
+Rook CSV.
 
 Next, roughly in order of value:
 
 1. **Passkeys / WebAuthn** — store credentials and act as an authenticator.
 2. **Attachments** — encrypt file blobs separately, same key hierarchy.
-3. **Multi-device conflict UI** — the server already detects conflicts; surface a merge view.
-4. **Sharing** — public-key envelopes per recipient, so a shared item does not require
+3. **Sharing** — public-key envelopes per recipient, so a shared item does not require
    sharing the vault key.
-5. **Email breach monitoring** — periodic HIBP checks for account addresses.
+4. **Email breach monitoring** — periodic HIBP checks for account addresses.
 
 Deliberately out of scope for now: a browser extension and autofill. Also out of scope for
 this personal build: team administration, SSO/SCIM, travel mode, and a hosted service.

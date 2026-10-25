@@ -235,6 +235,7 @@ export function Modal({
   description,
   children,
   width = 'max-w-lg',
+  dismissible = true,
 }: {
   open: boolean
   onClose: () => void
@@ -242,19 +243,24 @@ export function Modal({
   description?: string
   children: ReactNode
   width?: string
+  dismissible?: boolean
 }) {
-  useEscape(open, onClose)
+  useEscape(open, dismissible ? onClose : () => {})
   useLockBodyScroll(open)
 
   if (!open) return null
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <button
-        type="button"
-        aria-label="Close"
-        onClick={onClose}
-        className="absolute inset-0 bg-black/30 fade-in dark:bg-black/55"
-      />
+      {dismissible ? (
+        <button
+          type="button"
+          aria-label="Close"
+          onClick={onClose}
+          className="absolute inset-0 bg-black/30 fade-in dark:bg-black/55"
+        />
+      ) : (
+        <div aria-hidden="true" className="absolute inset-0 bg-black/30 fade-in dark:bg-black/55" />
+      )}
       <div
         role="dialog"
         aria-modal="true"
@@ -269,9 +275,11 @@ export function Modal({
             <h2 className="truncate text-[14px] font-semibold tracking-[-0.01em]">{title}</h2>
             {description && <p className="truncate text-[11.5px] text-muted">{description}</p>}
           </div>
-          <button type="button" onClick={onClose} className="icon-btn -mr-2" aria-label="Close dialog">
-            <Icon name="close" size={16} />
-          </button>
+          {dismissible && (
+            <button type="button" onClick={onClose} className="icon-btn -mr-2" aria-label="Close dialog">
+              <Icon name="close" size={16} />
+            </button>
+          )}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
       </div>
