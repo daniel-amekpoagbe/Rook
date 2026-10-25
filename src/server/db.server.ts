@@ -47,7 +47,19 @@ export function getDb(): DatabaseSync {
       reset_at   INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS shares (
+      id         TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      entry_id   TEXT NOT NULL,
+      ciphertext TEXT NOT NULL,
+      nonce      TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_shares_user_entry ON shares(user_id, entry_id);
+    CREATE INDEX IF NOT EXISTS idx_shares_expires ON shares(expires_at);
   `)
   return db
 }
@@ -154,4 +166,67 @@ export function recordFailure(bucket: string, now: number, windowMs: number): vo
 
 export function clearFailures(bucket: string): void {
   getDb().prepare('DELETE FROM login_attempts WHERE bucket = ?').run(bucket)
+}
+
+export interface ShareRow {
+  id: string
+  user_id: string
+  entry_id: string
+  ciphertext: string
+  nonce: string
+  expires_at: number
+  created_at: number
+}
+
+export interface ShareSummaryRow {
+  id: string
+  expiresAt: number
+  createdAt: number
+}
+
+export function createShare(row: ShareRow): void {
+  getDb()
+    .prepare(
+      `INSERT INTO shares (id, user_id, entry_id, ciphertext, nonce, expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      row.id,
+      row.user_id,
+      row.entry_id,
+      row.ciphertext,
+      row.nonce,
+      row.expires_at,
+      row.created_at,
+    )
+}
+
+export function getShare(id: string): ShareRow | undefined {
+  return getDb().prepare('SELECT * FROM shares WHERE id = ?').get(id) as ShareRow | undefined
+}
+
+export function countActiveShares(userId: string, now: number): number {
+  const row = getDb()
+    .prepare('SELECT COUNT(*) AS count FROM shares WHERE user_id = ? AND expires_at > ?')
+    .get(userId, now) as { count: number } | undefined
+  return row?.count ?? 0
+}
+
+export function listShares(userId: string, entryId: string, now: number): ShareSummaryRow[] {
+  return getDb()
+    .prepare(
+      `SELECT id, expires_at AS expiresAt, created_at AS createdAt
+       FROM shares
+       WHERE user_id = ? AND entry_id = ? AND expires_at > ?
+       ORDER BY created_at DESC`,
+    )
+    .all(userId, entryId, now) as unknown as ShareSummaryRow[]
+}
+
+export function deleteShareForUser(id: string, userId: string): void {
+  getDb().prepare('DELETE FROM shares WHERE id = ? AND user_id = ?').run(id, userId)
+}
+
+export function deleteExpiredShares(now: number): void {
+  getDb().prepare('DELETE FROM shares WHERE expires_at <= ?').run(now)
 }

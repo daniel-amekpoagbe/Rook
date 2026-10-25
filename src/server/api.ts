@@ -1,6 +1,7 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import type { KdfConfig } from '~/lib/crypto'
+import { SHARE_TTL_MS } from '~/lib/share'
 
 const kdfSchema = z.object({
   algorithm: z.literal('argon2id'),
@@ -24,6 +25,17 @@ const vaultPayload = {
   ciphertext: base64ish,
   nonce: z.string().min(16).max(64),
 }
+
+const shareIdSchema = z
+  .string()
+  .regex(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    'Invalid share id',
+  )
+
+const shareCiphertext = z.string().min(16).max(32_000)
+const entryIdSchema = z.string().min(1).max(128)
+const MAX_ACTIVE_SHARES = 50
 
 async function store() {
   const db = await import('./db.server')
@@ -186,4 +198,77 @@ export const rotateFn = createServerFn({ method: 'POST' })
       updated_at: now,
     })
     return { version: nextVersion, updatedAt: now }
+  })
+
+/**
+ * Create an expiring share. The server receives only ciphertext; the key lives
+ * in the recipient URL fragment and never reaches this handler.
+ */
+export const createShareFn = createServerFn({ method: 'POST' })
+  .validator(
+    z.object({
+      id: shareIdSchema,
+      entryId: entryIdSchema,
+      ciphertext: shareCiphertext,
+      nonce: vaultPayload.nonce,
+    }),
+  )
+  .handler(async ({ data }) => {
+    const { db, session } = await store()
+    const user = session.requireUser()
+    const now = Date.now()
+    db.deleteExpiredShares(now)
+    if (db.countActiveShares(user.id, now) >= MAX_ACTIVE_SHARES) {
+      throw new Error('SHARE_LIMIT')
+    }
+    if (db.getShare(data.id)) throw new Error('SHARE_EXISTS')
+
+    const expiresAt = now + SHARE_TTL_MS
+    db.createShare({
+      id: data.id,
+      user_id: user.id,
+      entry_id: data.entryId,
+      ciphertext: data.ciphertext,
+      nonce: data.nonce,
+      expires_at: expiresAt,
+      created_at: now,
+    })
+    return { id: data.id, expiresAt, createdAt: now }
+  })
+
+/** Public read used by the recipient page. Authentication is deliberately not required. */
+export const getShareFn = createServerFn({ method: 'GET' })
+  .validator(z.object({ id: shareIdSchema }))
+  .handler(async ({ data }) => {
+    const { db } = await store()
+    const now = Date.now()
+    db.deleteExpiredShares(now)
+    const share = db.getShare(data.id)
+    if (!share || share.expires_at <= now) throw new Error('SHARE_UNAVAILABLE')
+    return {
+      id: share.id,
+      ciphertext: share.ciphertext,
+      nonce: share.nonce,
+      expiresAt: share.expires_at,
+      createdAt: share.created_at,
+    }
+  })
+
+export const listSharesFn = createServerFn({ method: 'GET' })
+  .validator(z.object({ entryId: entryIdSchema }))
+  .handler(async ({ data }) => {
+    const { db, session } = await store()
+    const user = session.requireUser()
+    const now = Date.now()
+    db.deleteExpiredShares(now)
+    return { shares: db.listShares(user.id, data.entryId, now) }
+  })
+
+export const revokeShareFn = createServerFn({ method: 'POST' })
+  .validator(z.object({ id: shareIdSchema }))
+  .handler(async ({ data }) => {
+    const { db, session } = await store()
+    const user = session.requireUser()
+    db.deleteShareForUser(data.id, user.id)
+    return { ok: true }
   })

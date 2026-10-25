@@ -30,7 +30,9 @@ An original implementation, not a clone: the master password is stretched with A
 
 - Entry types: login, secure note, card, identity. Favorites, tags, search, sorting.
 - Item history (last 20 versions) and trash, both encrypted with the vault; restore a version, restore a deleted item, or remove it permanently.
+- Permanent-delete tombstones: a deletion survives conflict merges, so a stale tab or stale vault copy cannot silently resurrect the item.
 - Save conflicts are explicit: merge items from both versions, keep this tab's version, or load the server version. Local edits stay encrypted and in memory until the choice is made.
+- Share a login password as a three-day bearer link. The recipient needs no Rook account; the key travels in the URL fragment, the server stores only ciphertext, and the owner can list and revoke active links.
 - Client-side Argon2id (64 MiB, t=3, p=1), HKDF-SHA256 key split, XChaCha20-Poly1305 vault encryption with the KDF header bound as AAD.
 - Session cookie holds a random token; the database stores only its SHA-256. Eight failed attempts per fifteen minutes.
 - Password generator, entropy estimate, TOTP (RFC 6238), audit with optional HIBP range check.
@@ -70,4 +72,5 @@ Keyboard-first operation with visible focus. Body text meets WCAG AA contrast. C
 
 - Whether this is ever deployed beyond the owner's machine.
 - Whether multi-device sync is in scope later.
+- Whether sharing should stay as bearer links or become recipient-bound (public-key envelopes) later.
 - Browser extension and autofill are explicitly out of scope for now.
