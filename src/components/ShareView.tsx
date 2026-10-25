@@ -1,8 +1,9 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState, type CSSProperties, type ReactNode } from 'react'
 import { getShareFn } from '~/server/api'
 import { decodeShareKey, formatShareRemaining, openShare, type SharePayload } from '~/lib/share'
-import { Icon, Spinner, ThemeToggle, useCopyToClipboard } from './ui'
+import { Icon, Spinner, ThemeToggle, cx, useCopyToClipboard } from './ui'
 import { RookMark } from './RookMark'
+import { BrandIcon, brandCssVars, brandForEntry } from './BrandIcon'
 
 type LoadState =
   | { status: 'loading' }
@@ -36,7 +37,7 @@ function shareHref(url: string): string | undefined {
 
 function Header() {
   return (
-    <header className="flex h-16 items-center justify-between px-5">
+    <header className="flex h-16 shrink-0 items-center justify-between px-5 sm:px-8">
       <a href="/" className="flex items-center gap-2.5" aria-label="Rook home">
         <span className="flex size-8 items-center justify-center rounded-[10px] border border-line bg-white text-[#0a0b0e] shadow-rest">
           <RookMark className="size-[18px]" />
@@ -52,8 +53,8 @@ function Shell({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-dvh flex-col bg-canvas">
       <Header />
-      <main className="flex flex-1 items-center justify-center px-4 py-8 sm:py-12">
-        <div className="w-full max-w-[440px]">{children}</div>
+      <main className="flex flex-1 justify-center px-4 py-8 sm:px-6 sm:py-12">
+        <div className="w-full max-w-[640px]">{children}</div>
       </main>
       <footer className="px-5 pb-5 text-center text-[10.5px] text-faint">
         End-to-end encrypted · Rook never sees this password
@@ -64,7 +65,7 @@ function Shell({ children }: { children: ReactNode }) {
 
 function ErrorCard({ message }: { message: string }) {
   return (
-    <div className="rounded-xl border border-line bg-surface p-6 text-center shadow-rest">
+    <div className="rise rounded-xl border border-line bg-surface p-6 text-center shadow-rest">
       <span className="mx-auto flex size-11 items-center justify-center rounded-xl border border-danger/20 bg-danger-soft text-danger">
         <Icon name="alert" size={20} />
       </span>
@@ -81,41 +82,68 @@ function ShareField({
   label,
   value,
   href,
+  secret = false,
 }: {
   label: string
   value: string
   href?: string
+  secret?: boolean
 }) {
+  const [revealed, setRevealed] = useState(false)
   const { copied, copy } = useCopyToClipboard()
 
   return (
-    <div className="flex items-center justify-between gap-3 border-b border-line py-2.5 last:border-0">
+    <div className="group flex items-start justify-between gap-4 border-b border-line px-4 py-3.5 last:border-0">
       <div className="min-w-0 flex-1">
         <div className="text-[11px] font-medium text-muted">{label}</div>
-        <div className="mt-0.5 break-all font-mono text-[12.5px] text-ink">
-          {href ? (
+        <div
+          className={cx(
+            'mt-1 break-all text-[14px] text-ink',
+            secret && 'font-mono tracking-wide',
+            secret && !revealed && 'select-none tracking-[0.22em]',
+          )}
+        >
+          {secret && !revealed ? (
+            '••••••••••••'
+          ) : href ? (
             <a
               href={href}
               target="_blank"
               rel="noreferrer noopener"
-              className="inline-flex items-center gap-1 hover:text-accent"
+              className="inline-flex items-center gap-1 break-all hover:text-accent"
             >
               {value}
-              <Icon name="arrowUpRight" size={11} className="text-faint" />
+              <Icon name="arrowUpRight" size={12} className="shrink-0 text-faint" />
             </a>
           ) : (
             value
           )}
         </div>
       </div>
-      <button
-        type="button"
-        className="icon-btn size-7 shrink-0"
-        onClick={() => copy(value)}
-        aria-label={`Copy ${label}`}
-      >
-        <Icon name={copied ? 'check' : 'copy'} size={14} className={copied ? 'text-success' : undefined} />
-      </button>
+      <div className="flex shrink-0 items-center gap-0.5 pt-1">
+        {secret && (
+          <button
+            type="button"
+            className="icon-btn size-7"
+            onClick={() => setRevealed((prev) => !prev)}
+            aria-label={revealed ? 'Hide password' : 'Reveal password'}
+          >
+            <Icon name={revealed ? 'eyeOff' : 'eye'} size={14} />
+          </button>
+        )}
+        <button
+          type="button"
+          className="icon-btn size-7"
+          onClick={() => copy(value)}
+          aria-label={`Copy ${label} to clipboard`}
+        >
+          <Icon
+            name={copied ? 'check' : 'copy'}
+            size={14}
+            className={copied ? 'text-success' : undefined}
+          />
+        </button>
+      </div>
     </div>
   )
 }
@@ -129,91 +157,89 @@ function ReadyCard({
   expiresAt: number
   now: number
 }) {
-  const [revealed, setRevealed] = useState(false)
   const { copied, copy } = useCopyToClipboard()
   const websiteHref = payload.url ? shareHref(payload.url) : undefined
+  const brand = brandForEntry(payload.url, payload.title)
+  const initial = payload.title.trim().charAt(0).toUpperCase()
+  const remaining = formatShareRemaining(expiresAt, now)
 
   return (
-    <div className="rounded-xl border border-line bg-surface p-5 shadow-rest sm:p-6">
-      <div className="flex items-start gap-3">
-        <span className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-accent/20 bg-accent-soft text-accent">
-          <Icon name="link" size={18} />
+    <div className="rise">
+      <div className="flex items-start gap-4">
+        <span
+          className={cx('avatar shrink-0', brand && 'avatar-brand')}
+          style={{
+            ...(brand ? brandCssVars(brand) : { '--hue': 214 }),
+            width: 56,
+            height: 56,
+            fontSize: 20,
+          } as CSSProperties}
+          aria-hidden="true"
+        >
+          {brand ? <BrandIcon brand={brand} size={34} /> : initial || <Icon name="key" size={24} />}
         </span>
-        <div className="min-w-0 flex-1">
-          <p className="text-[10.5px] font-semibold tracking-[0.08em] text-faint uppercase">Shared password</p>
-          <h1 className="mt-0.5 truncate text-[20px] font-semibold tracking-[-0.02em]">{payload.title}</h1>
-          <p className="mt-0.5 text-[12px] text-muted">
-            Shared by {payload.from || 'a Rook user'}
-          </p>
+        <div className="min-w-0 flex-1 pt-0.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="chip normal-case tracking-normal">Shared password</span>
+            <span className="inline-flex items-center gap-1 rounded-full border border-line bg-surface px-2 py-0.5 text-[10.5px] text-muted">
+              <Icon name="clock" size={11} className="text-faint" />
+              Expires in {remaining}
+            </span>
+          </div>
+          <h1 className="mt-2 text-[26px] leading-[1.15] font-semibold tracking-[-0.03em] break-words sm:text-[28px]">
+            {payload.title}
+          </h1>
+          <p className="mt-1 text-[12.5px] text-muted">Shared by {payload.from || 'a Rook user'}</p>
         </div>
       </div>
 
-      <div className="mt-5 rounded-lg border border-line bg-surface-2 p-3">
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-[11.5px] font-medium text-muted">Password</span>
-          <span className="inline-flex items-center gap-1 text-[10.5px] text-faint">
-            <Icon name="clock" size={11} />
-            Expires in {formatShareRemaining(expiresAt, now)}
-          </span>
-        </div>
-        <div className="mt-1.5 flex items-center gap-1.5">
-          <code
-            className={`min-w-0 flex-1 break-all font-mono text-[15px] tracking-wide text-ink ${
-              revealed ? '' : 'select-none tracking-[0.18em]'
-            }`}
+      <div className="mt-6 flex flex-wrap gap-2">
+        <button
+          type="button"
+          className="btn-primary h-9 px-3.5 text-[12.5px]"
+          onClick={() => copy(payload.password)}
+        >
+          <Icon name={copied ? 'check' : 'copy'} size={14} />
+          {copied ? 'Copied' : 'Copy password'}
+        </button>
+        {websiteHref && (
+          <a
+            className="btn-secondary h-9 px-3.5 text-[12.5px]"
+            href={websiteHref}
+            target="_blank"
+            rel="noreferrer noopener"
           >
-            {revealed ? payload.password : '••••••••••••'}
-          </code>
+            <Icon name="globe" size={14} />
+            Open website
+            <Icon name="arrowUpRight" size={12} className="text-faint" />
+          </a>
+        )}
+        {payload.username && (
           <button
             type="button"
-            className="icon-btn size-7 shrink-0"
-            onClick={() => setRevealed((prev) => !prev)}
-            aria-label={revealed ? 'Hide password' : 'Reveal password'}
+            className="btn-secondary h-9 px-3.5 text-[12.5px]"
+            onClick={() => copy(payload.username!)}
           >
-            <Icon name={revealed ? 'eyeOff' : 'eye'} size={14} />
+            <Icon name="copy" size={14} />
+            Copy username
           </button>
-          <button
-            type="button"
-            className="icon-btn size-7 shrink-0"
-            onClick={() => copy(payload.password)}
-            aria-label="Copy password"
-          >
-            <Icon
-              name={copied ? 'check' : 'copy'}
-              size={14}
-              className={copied ? 'text-success' : undefined}
-            />
-          </button>
-        </div>
+        )}
       </div>
 
-      {(payload.username || payload.url) && (
-        <div className="mt-3 rounded-lg border border-line bg-surface px-3">
-          {payload.username && <ShareField label="Username" value={payload.username} />}
-          {payload.url && (
-            <ShareField label="Website" value={payload.url} href={websiteHref} />
-          )}
-        </div>
-      )}
+      <div className="mt-6 overflow-hidden rounded-xl border border-line bg-surface shadow-rest">
+        {payload.username && <ShareField label="Username" value={payload.username} />}
+        <ShareField label="Password" value={payload.password} secret />
+        {payload.url && <ShareField label="Website" value={payload.url} href={websiteHref} />}
+      </div>
 
-      <button
-        type="button"
-        className="btn-primary mt-4 w-full"
-        onClick={() => copy(payload.password)}
-      >
-        <Icon name={copied ? 'check' : 'copy'} size={14} />
-        {copied ? 'Copied to clipboard' : 'Copy password'}
-      </button>
-
-      <div className="mt-4 flex items-start gap-2 rounded-lg border border-warn/25 bg-warn/5 px-3 py-2.5 text-[11px] leading-relaxed text-muted">
-        <Icon name="alert" size={13} className="mt-0.5 shrink-0 text-warn" />
+      <div className="mt-4 flex items-start gap-2 text-[11px] leading-relaxed text-faint">
+        <Icon name="shield" size={13} className="mt-0.5 shrink-0 text-success" />
         <span>
-          Anyone with this link can view the password until it expires. Do not forward it or post it
-          publicly.
+          This link expires in {remaining}. Anyone with the link can open these credentials, so share
+          it only with the intended recipient.
         </span>
       </div>
-
-      <p className="mt-3 text-center text-[10.5px] text-faint">
+      <p className="mt-2 text-[10.5px] text-faint">
         Expires {new Date(expiresAt).toLocaleString()}
       </p>
     </div>
@@ -283,7 +309,7 @@ export function ShareView({ shareId }: { shareId: string }) {
   if (state.status === 'loading') {
     return (
       <Shell>
-        <div className="flex flex-col items-center rounded-xl border border-line bg-surface px-6 py-12 text-center shadow-rest">
+        <div className="flex flex-col items-center py-16 text-center">
           <Spinner size={20} className="text-accent" />
           <p className="mt-3 text-[12.5px] text-muted">Opening shared password…</p>
         </div>

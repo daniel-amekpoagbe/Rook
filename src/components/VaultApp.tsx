@@ -22,7 +22,7 @@ import { SettingsModal } from './SettingsPanel'
 import { ShareDialog } from './ShareDialog'
 import { Icon, Modal, ThemeToggle, cx, timeAgo, useCopyToClipboard } from './ui'
 import { RookMark } from './RookMark'
-import { BrandIcon, brandForEntry } from './BrandIcon'
+import { BrandIcon, brandCssVars, brandForEntry } from './BrandIcon'
 
 const AVATAR_HUES = [214, 262, 168, 32, 342, 190, 12, 285]
 
@@ -37,14 +37,20 @@ function EntryAvatar({ entry, size = 36 }: { entry: Entry; size?: number }) {
   const seed = hostOf(entry.url) ?? entry.title
   const hue = avatarHue(seed)
   const initial = entry.title.trim().charAt(0).toUpperCase()
+  const iconSize = size >= 48 ? 30 : size >= 40 ? 26 : 22
   return (
     <span
-      className="avatar shrink-0"
-      style={{ '--hue': hue, width: size, height: size, fontSize: size >= 44 ? 16 : 13 } as CSSProperties}
+      className={cx('avatar shrink-0', brand && 'avatar-brand')}
+      style={{
+        ...(brand ? brandCssVars(brand) : { '--hue': hue }),
+        width: size,
+        height: size,
+        fontSize: size >= 44 ? 16 : 13,
+      } as CSSProperties}
       aria-hidden="true"
     >
       {brand ? (
-        <BrandIcon brand={brand} size={size >= 44 ? 27 : 22} />
+        <BrandIcon brand={brand} size={iconSize} />
       ) : (
         initial || <Icon name={TYPE_META[entry.type].icon} size={size >= 44 ? 19 : 16} />
       )}
@@ -292,10 +298,10 @@ function EntryDetail({
               This item is in the trash. Restore it to edit it or return it to your vault.
             </div>
           )}
-          <div className="flex items-start gap-3.5">
-            <EntryAvatar entry={entry} size={44} />
+          <div className="flex items-start gap-4">
+            <EntryAvatar entry={entry} size={48} />
             <div className="min-w-0 flex-1">
-              <h2 className="truncate text-[22px] leading-tight font-semibold tracking-[-0.02em]">{entry.title}</h2>
+              <h2 className="truncate text-[24px] leading-tight font-semibold tracking-[-0.025em]">{entry.title}</h2>
               <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted">
                 {host ? (
                   <a

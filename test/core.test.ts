@@ -182,8 +182,15 @@ test('entry search, sorting and validation', () => {
 
 test('login avatars resolve familiar platform brands from URLs and titles', () => {
   assert.equal(brandForUrl('https://accounts.google.com/signin'), 'google')
+  assert.equal(brandForUrl('https://mail.google.com'), 'gmail')
   assert.equal(brandForUrl('instagram.com'), 'instagram')
+  assert.equal(brandForUrl('https://supabase.com/dashboard'), 'supabase')
+  assert.equal(brandForUrl('https://linear.app/rook'), 'linear')
+  assert.equal(brandForUrl('https://console.aws.amazon.com'), 'amazon')
+  assert.equal(brandForUrl('https://login.microsoftonline.com'), 'microsoft')
   assert.equal(brandForUrl('https://www.example.com'), null)
   assert.equal(brandForEntry(undefined, 'Google Workspace'), 'google')
+  assert.equal(brandForEntry(undefined, 'Gmail'), 'gmail')
+  assert.equal(brandForEntry(undefined, 'AWS Console'), 'amazon')
   assert.equal(brandForEntry(undefined, 'Instagram'), 'instagram')
 })
