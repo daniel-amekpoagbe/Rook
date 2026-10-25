@@ -23,6 +23,7 @@ import {
 import { DEFAULT_GENERATOR_OPTIONS, generatePassword, generatorEntropyBits } from '../src/lib/generator'
 import { scorePassword } from '../src/lib/strength'
 import { base32Decode, generateTotp, isValidTotpSecret, normalizeTotpSecret } from '../src/lib/totp'
+import { brandForEntry, brandForUrl } from '../src/components/BrandIcon'
 
 // Cheap KDF for tests; production params are exercised once below.
 const TEST_KDF = { algorithm: 'argon2id' as const, t: 1, m: 8192, p: 1, salt: toB64(new Uint8Array(16).fill(7)) }
@@ -177,4 +178,12 @@ test('entry search, sorting and validation', () => {
   assert.ok(matchesQuery(github, 'github daniel'))
   assert.ok(matchesQuery(bank, 'zenith'))
   assert.ok(!matchesQuery(bank, 'github'))
+})
+
+test('login avatars resolve familiar platform brands from URLs and titles', () => {
+  assert.equal(brandForUrl('https://accounts.google.com/signin'), 'google')
+  assert.equal(brandForUrl('instagram.com'), 'instagram')
+  assert.equal(brandForUrl('https://www.example.com'), null)
+  assert.equal(brandForEntry(undefined, 'Google Workspace'), 'google')
+  assert.equal(brandForEntry(undefined, 'Instagram'), 'instagram')
 })
