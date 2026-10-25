@@ -13,8 +13,9 @@ function vault(
   entries: Entry[] = [],
   trash: Entry[] = [],
   history: VaultData['history'] = {},
+  tombstones: VaultData['tombstones'] = [],
 ): VaultData {
-  return { version: VAULT_DATA_VERSION, entries, trash, history }
+  return { version: VAULT_DATA_VERSION, entries, trash, history, tombstones }
 }
 
 function login(id: string, updatedAt: string, password: string): Entry {
@@ -109,4 +110,35 @@ test('merging an empty side preserves the other vault', () => {
   const merged = mergeVaultData(emptyVault(), source)
 
   assert.deepEqual(merged, source)
+})
+
+test('a permanent-delete tombstone suppresses a stale remote copy', () => {
+  const deletedAt = '2026-01-03T00:00:00.000Z'
+  const local = vault([], [], {}, [{ id: 'gone', deletedAt }])
+  const remote = login('gone', '2026-01-02T00:00:00.000Z', 'stale')
+
+  const merged = mergeVaultData(local, vault([remote]))
+
+  assert.equal(merged.entries.length, 0)
+  assert.deepEqual(merged.tombstones, [{ id: 'gone', deletedAt }])
+})
+
+test('an edit newer than a permanent deletion restores the item', () => {
+  const tombstone = { id: 'item', deletedAt: '2026-01-03T00:00:00.000Z' }
+  const restored = login('item', '2026-01-04T00:00:00.000Z', 'restored')
+
+  const merged = mergeVaultData(vault([], [], {}, [tombstone]), vault([restored]))
+
+  assert.equal(merged.entries[0]?.password, 'restored')
+  assert.deepEqual(merged.tombstones, [])
+})
+
+test('the newest tombstone wins and unrelated tombstones are preserved', () => {
+  const older = { id: 'same', deletedAt: '2026-01-02T00:00:00.000Z' }
+  const newer = { id: 'same', deletedAt: '2026-01-03T00:00:00.000Z' }
+  const other = { id: 'other', deletedAt: '2026-01-01T00:00:00.000Z' }
+
+  const merged = mergeVaultData(vault([], [], {}, [older, other]), vault([], [], {}, [newer]))
+
+  assert.deepEqual(merged.tombstones, [newer, other])
 })
