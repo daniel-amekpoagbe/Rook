@@ -65,9 +65,14 @@ does not let an attacker log in (they would need a preimage of SHA-256) or decry
 ```sql
 users(id, handle, kdf, auth_hash, created_at)     -- kdf = {algorithm,t,m,p,salt} (public)
 vaults(user_id, ciphertext, nonce, version, updated_at)
+shares(id, user_id, entry_id, ciphertext, nonce, expires_at, created_at)
 sessions(token_hash, user_id, expires_at)         -- only SHA-256 of the cookie token
 login_attempts(bucket, failures, reset_at)        -- 8 failures / 15 min, per handle
 ```
+
+A share row holds an opaque entry id, ciphertext, a nonce, and timestamps. The 32-byte key
+that decrypts it lives only in the recipient URL fragment (`/share/{id}#{key}`), so the server
+never receives it. Expired rows are removed lazily on share reads and writes.
 
 The KDF header (algorithm, cost parameters, salt) is public by necessity — the client needs
 it before it can derive anything. But it is **bound into the AEAD as associated data**, so an
@@ -89,6 +94,8 @@ the salt: the Poly1305 tag will not verify.
   so the client performs the same work and the same round trip.
 - Clipboard snooping — copied secrets are cleared after 30 seconds (best effort).
 - Shoulder surfing / unattended laptops — idle auto-lock wipes the in-memory key.
+- Server-side share leaks — a share row is ciphertext only; the URL fragment key is never sent
+  to the server, and the encrypted payload carries its own expiry.
 
 **Does not protect against**
 
@@ -96,7 +103,10 @@ the salt: the Poly1305 tag will not verify.
 - A weak master password. Argon2id makes guessing expensive, not impossible.
 - **Losing the master password.** There is no recovery, no reset link, no escrow. That is the
   price of zero-knowledge, and it is deliberate.
-- Metadata: the server learns your handle, vault size, save timestamps, and version count.
+- **Anyone holding a share link.** It is a bearer link: until it expires or is revoked, anyone
+  with the full URL can read the shared password. Send it only over a trusted channel.
+- Metadata: the server learns your handle, vault size, save timestamps, version count, and the
+  opaque entry id and expiry of any active share.
 
 ---
 
@@ -108,16 +118,27 @@ Vault
 - Create, edit, move to trash, restore, favorite, tags
 - Item history: the previous 20 versions stay encrypted, and any version can be restored
 - Trash: deleted items can be restored or permanently removed with their history
+- Permanent-delete tombstones: a deletion survives conflict merges, so a stale vault copy
+  cannot silently resurrect the item
 - Full-text search across title, username, URL, notes, tags
 - Filters by type, favorites, and trash
 - Live TOTP codes (RFC 6238, SHA-1/6 digits/30 s) with expiry progress
 - Copy buttons everywhere; password masking with explicit reveal
+
+Sharing
+
+- Create a password share link from a login; the recipient does not need a Rook account
+- Links expire after three days, enforced by the server and by the encrypted payload
+- The share key travels in the URL fragment, so the server only stores ciphertext
+- Active links can be listed and revoked; the link key is not stored, so copy it when created
 
 Security
 
 - Argon2id (64 MiB, t=3, p=1) with a per-account random salt
 - XChaCha20-Poly1305, fresh 24-byte nonce on every save
 - KDF header authenticated as AEAD associated data
+- Share links: XChaCha20-Poly1305 with a random 32-byte key in the URL fragment, share id
+  bound as AAD, and a 3-day expiry
 - Master password rotation (fresh salt, re-key, re-encrypt, single atomic server update)
 - Idle auto-lock (1/5/15/30/60 min), in-memory key wiping
 - httpOnly session cookie; only its SHA-256 is stored
@@ -177,14 +198,14 @@ empty and unlocks immediately.
 ### Tests
 
 ```bash
-npm test           # crypto, vault, conflict merge, history/trash migration, generator, strength, TOTP, and import parsers
+npm test           # crypto, vault, conflict merge, tombstones, sharing, generator, strength, TOTP, and import parsers
 npm run typecheck
 ```
 
 The end-to-end browser flows (register → save → reload locks → wrong password rejected →
-correct password decrypts → generator, plus two-tab conflict merge/keep/use-server) live
-outside the repo in the development scratch area and are run with Playwright against a live
-server.
+correct password decrypts → generator, two-tab conflict merge/keep/use-server, and
+create → open without an account → revoke/expire a share link) live outside the repo in the
+development scratch area and are run with Playwright against a live server.
 
 ---
 
@@ -192,17 +213,19 @@ server.
 
 ```
 src/lib/crypto.ts          Argon2id, HKDF split, auth proof, AEAD helpers
-src/lib/vault.ts           entry schema (zod), seal/open, header AAD, history/trash, conflict merge, search/sort
+src/lib/vault.ts           entry schema (zod), seal/open, header AAD, history/trash/tombstones, conflict merge, search/sort
 src/lib/vault-context.tsx  unlock/register/save/conflict/re-key state machine, auto-lock, exports
+src/lib/share.ts           share payload schema, URL-fragment key encoding, seal/open
 src/lib/import.ts          Chrome/1Password/Bitwarden/Rook parsers and duplicate fingerprints
 src/lib/generator.ts       unbiased CSPRNG password generation + entropy
 src/lib/strength.ts        entropy estimator with sequence/repeat/common penalties
 src/lib/totp.ts            base32 + RFC 6238 via WebCrypto
-src/server/api.ts          server functions (register, login, kdf, pull/push, rotate)
+src/server/api.ts          server functions (register, login, kdf, pull/push, rotate, share)
 src/server/db.server.ts    node:sqlite schema and queries
 src/server/session.server.ts  cookie sessions, constant-time compare
-src/components/            lock screen, vault shell, editor, generator, audit, settings
+src/components/            lock screen, vault shell, editor, generator, audit, settings, share
 src/routes/__root.tsx      document shell; VaultProvider lives above the router
+src/routes/share.$shareId.tsx  public recipient page for an expiring share link
 ```
 
 ### Notes from building it
@@ -219,15 +242,15 @@ src/routes/__root.tsx      document shell; VaultProvider lives above the router
 ## 7. Roadmap toward "80% of 1Password"
 
 Done: the vault, the crypto, the item types, TOTP, audit, generator, backups, rotation,
-item history, trash, conflict recovery, and import from Chrome, 1Password, Bitwarden, and
-Rook CSV.
+item history, trash, permanent-delete tombstones, conflict recovery, expiring password-share
+links, and import from Chrome, 1Password, Bitwarden, and Rook CSV.
 
 Next, roughly in order of value:
 
 1. **Passkeys / WebAuthn** — store credentials and act as an authenticator.
 2. **Attachments** — encrypt file blobs separately, same key hierarchy.
-3. **Sharing** — public-key envelopes per recipient, so a shared item does not require
-   sharing the vault key.
+3. **Recipient-bound sharing** — replace bearer links with public-key envelopes per recipient,
+   so a forwarded link cannot be opened by anyone else and access can be revoked per person.
 4. **Email breach monitoring** — periodic HIBP checks for account addresses.
 
 Deliberately out of scope for now: a browser extension and autofill. Also out of scope for

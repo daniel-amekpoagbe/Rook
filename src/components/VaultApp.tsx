@@ -19,6 +19,7 @@ import {
 import { AuditModal } from './AuditPanel'
 import { EntryForm, GeneratorModal, TYPE_META, newDraft } from './EntryEditor'
 import { SettingsModal } from './SettingsPanel'
+import { ShareDialog } from './ShareDialog'
 import { Icon, Modal, ThemeToggle, cx, timeAgo, useCopyToClipboard } from './ui'
 import { RookMark } from './RookMark'
 import { BrandIcon, brandForEntry } from './BrandIcon'
@@ -199,6 +200,7 @@ function EntryDetail({
   onToggleFavorite,
   onBack,
   onRestoreVersion,
+  onShare,
   trashed = false,
   onRestore,
   onDeleteForever,
@@ -210,6 +212,7 @@ function EntryDetail({
   onToggleFavorite: () => void
   onBack: () => void
   onRestoreVersion: (updatedAt: string) => void
+  onShare?: () => void
   trashed?: boolean
   onRestore?: () => void
   onDeleteForever?: () => void
@@ -317,6 +320,11 @@ function EntryDetail({
               <button type="button" className="btn-primary" onClick={() => copy(entry.password!, 'password')}>
                 <Icon name={copied === 'password' ? 'check' : 'copy'} size={14} />
                 {copied === 'password' ? 'Copied' : 'Copy password'}
+              </button>
+            )}
+            {!trashed && entry.type === 'login' && entry.password && onShare && (
+              <button type="button" className="btn-secondary" onClick={onShare}>
+                <Icon name="link" size={14} /> Share
               </button>
             )}
             {entry.url && (
@@ -475,6 +483,7 @@ export function VaultApp() {
   const [generatorOpen, setGeneratorOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<Entry | null>(null)
   const [deleteForeverTarget, setDeleteForeverTarget] = useState<Entry | null>(null)
+  const [shareTarget, setShareTarget] = useState<Entry | null>(null)
   const [railOpen, setRailOpen] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
 
@@ -971,6 +980,7 @@ export function VaultApp() {
             onToggleFavorite={() => toggleFavorite(selected)}
             onBack={() => setSelectedId(null)}
             onRestoreVersion={(updatedAt) => restoreHistory(selected.id, updatedAt)}
+            onShare={() => setShareTarget(selected)}
             trashed={filter === 'trash'}
             onRestore={filter === 'trash' ? () => restore(selected.id) : undefined}
             onDeleteForever={
@@ -1064,6 +1074,14 @@ export function VaultApp() {
       <AuditModal open={auditOpen} onClose={() => setAuditOpen(false)} entries={entries} />
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <GeneratorModal open={generatorOpen} onClose={() => setGeneratorOpen(false)} />
+      {shareTarget && (
+        <ShareDialog
+          open
+          onClose={() => setShareTarget(null)}
+          entry={shareTarget}
+          handle={handle}
+        />
+      )}
 
       <Modal
         open={Boolean(deleteTarget)}
