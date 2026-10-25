@@ -165,7 +165,7 @@ export function LockScreen() {
       <ThemeToggle className="absolute top-5 right-5 z-20 border-line bg-surface text-muted shadow-rest hover:bg-surface-2 hover:text-ink" />
 
       <div className="mx-auto grid min-h-dvh max-w-[1500px] lg:grid-cols-[minmax(0,1fr)_350px]">
-        <main className="flex flex-col justify-center px-5 py-12 sm:px-8 lg:px-14 xl:px-20">
+        <main className="lock-login flex flex-col justify-center px-5 py-12 sm:px-8 lg:px-14 xl:px-20">
           <div className="mx-auto w-full max-w-[400px]">
             <div className="mb-9 lg:hidden">
               <BrandMark size="lg" />

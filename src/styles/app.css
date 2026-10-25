@@ -243,6 +243,12 @@
     letter-spacing: -0.01em;
   }
 
+  .avatar-brand {
+    border-color: color-mix(in oklab, var(--brand-color) 24%, var(--surface));
+    background: color-mix(in oklab, var(--brand-color) 10%, var(--surface));
+    color: var(--brand-color);
+  }
+
   .brand-icon {
     color: var(--brand-color);
   }
@@ -253,12 +259,39 @@
     color: hsl(var(--hue) 70% 74%);
   }
 
+  [data-theme='dark'] .avatar-brand {
+    border-color: color-mix(in oklab, var(--brand-color-dark) 28%, var(--surface));
+    background: color-mix(in oklab, var(--brand-color-dark) 14%, var(--surface));
+    color: var(--brand-color-dark);
+  }
+
+  [data-theme='dark'] .brand-icon {
+    color: var(--brand-color-dark, var(--brand-color));
+  }
+
   [data-theme='dark'] .btn-danger-solid {
     color: var(--on-primary);
   }
 }
 
 .lock-screen {
+  --canvas: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #ffffff;
+  --surface-3: #f2f4f8;
+  --ink: #19233a;
+  --ink-2: #46536d;
+  --ink-3: #64718b;
+  --hairline: #d9dee8;
+  --hairline-strong: #b9c2d2;
+  --primary: #146cff;
+  --primary-hover: #0c58d8;
+  --primary-wash: rgb(20 108 255 / 0.12);
+  --on-primary: #ffffff;
+  color-scheme: light;
+}
+
+.lock-login {
   --canvas: #000000;
   --surface: #111111;
   --surface-2: #0a0a0a;
@@ -274,7 +307,9 @@
   --on-primary: #ffffff;
   --danger: #ff8178;
   --danger-wash: rgb(255 129 120 / 0.12);
+  color: var(--ink);
   color-scheme: dark;
+  background: var(--canvas);
 }
 
 .lock-guide {
