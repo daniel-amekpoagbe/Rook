@@ -1,7 +1,21 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useVault } from '~/lib/vault-context'
 import { generateTotp, isValidTotpSecret, type TotpResult } from '~/lib/totp'
-import { hostOf, matchesQuery, newEntry, sortEntries, touch, type Entry, type EntryType } from '~/lib/vault'
+import {
+  deleteTrashedEntry,
+  hostOf,
+  matchesQuery,
+  newEntry,
+  restoreEntry,
+  restoreVersion,
+  sortEntries,
+  sortTrash,
+  touch,
+  trashEntry,
+  upsertEntry,
+  type Entry,
+  type EntryType,
+} from '~/lib/vault'
 import { AuditModal } from './AuditPanel'
 import { EntryForm, GeneratorModal, TYPE_META, newDraft } from './EntryEditor'
 import { SettingsModal } from './SettingsPanel'
@@ -173,16 +187,26 @@ function TotpBlock({ secret }: { secret: string }) {
 
 function EntryDetail({
   entry,
+  history,
   onEdit,
   onDelete,
   onToggleFavorite,
   onBack,
+  onRestoreVersion,
+  trashed = false,
+  onRestore,
+  onDeleteForever,
 }: {
   entry: Entry
+  history: Entry[]
   onEdit: () => void
   onDelete: () => void
   onToggleFavorite: () => void
   onBack: () => void
+  onRestoreVersion: (updatedAt: string) => void
+  trashed?: boolean
+  onRestore?: () => void
+  onDeleteForever?: () => void
 }) {
   const { copy, copied } = useCopyToClipboard()
   const host = hostOf(entry.url)
@@ -195,37 +219,70 @@ function EntryDetail({
           <button type="button" className="icon-btn md:hidden" onClick={onBack} aria-label="Back to list">
             <Icon name="arrowLeft" size={17} />
           </button>
-          <span className="chip">{meta.label}</span>
+          <span className="chip">{trashed ? 'Trash' : meta.label}</span>
           <span className="hidden text-[11.5px] text-faint sm:inline">
-            Updated {timeAgo(new Date(entry.updatedAt).getTime())}
+            {trashed
+              ? `Deleted ${timeAgo(new Date(entry.deletedAt ?? entry.updatedAt).getTime())}`
+              : `Updated ${timeAgo(new Date(entry.updatedAt).getTime())}`}
           </span>
         </div>
         <div className="flex items-center gap-1">
-          <button
-            type="button"
-            className={cx('icon-btn', entry.favorite && 'text-warn')}
-            onClick={onToggleFavorite}
-            aria-label="Toggle favorite"
-            aria-pressed={entry.favorite}
-          >
-            <Icon name="star" size={16} filled={entry.favorite} />
-          </button>
-          <button type="button" className="btn-secondary h-9 px-2.5 text-[12px] sm:h-8" onClick={onEdit}>
-            <Icon name="edit" size={13} /> Edit
-          </button>
-          <button
-            type="button"
-            className="icon-btn hover:text-danger"
-            onClick={onDelete}
-            aria-label="Delete item"
-          >
-            <Icon name="trash" size={15} />
-          </button>
+          {trashed ? (
+            <>
+              {onRestore && (
+                <button
+                  type="button"
+                  className="btn-secondary h-9 px-2.5 text-[12px] sm:h-8"
+                  onClick={onRestore}
+                >
+                  <Icon name="undo" size={13} /> Restore
+                </button>
+              )}
+              {onDeleteForever && (
+                <button
+                  type="button"
+                  className="icon-btn hover:text-danger"
+                  onClick={onDeleteForever}
+                  aria-label="Delete permanently"
+                >
+                  <Icon name="trash" size={15} />
+                </button>
+              )}
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                className={cx('icon-btn', entry.favorite && 'text-warn')}
+                onClick={onToggleFavorite}
+                aria-label="Toggle favorite"
+                aria-pressed={entry.favorite}
+              >
+                <Icon name="star" size={16} filled={entry.favorite} />
+              </button>
+              <button type="button" className="btn-secondary h-9 px-2.5 text-[12px] sm:h-8" onClick={onEdit}>
+                <Icon name="edit" size={13} /> Edit
+              </button>
+              <button
+                type="button"
+                className="icon-btn hover:text-danger"
+                onClick={onDelete}
+                aria-label="Delete item"
+              >
+                <Icon name="trash" size={15} />
+              </button>
+            </>
+          )}
         </div>
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-[660px] px-4 py-6 sm:px-6">
+          {trashed && (
+            <div className="mb-5 rounded-lg border border-warn/25 bg-warn/5 px-3 py-2.5 text-[11.5px] leading-relaxed text-muted">
+              This item is in the trash. Restore it to edit it or return it to your vault.
+            </div>
+          )}
           <div className="flex items-start gap-3.5">
             <EntryAvatar entry={entry} size={44} />
             <div className="min-w-0 flex-1">
@@ -330,6 +387,45 @@ function EntryDetail({
               </div>
             )}
 
+            {!trashed && history.length > 0 && (
+              <div className="mt-6">
+                <div className="flex items-baseline justify-between gap-3">
+                  <h3 className="text-[11.5px] font-medium text-muted">History</h3>
+                  <span className="text-[11px] text-faint">
+                    {history.length} previous {history.length === 1 ? 'version' : 'versions'}
+                  </span>
+                </div>
+                <div className="mt-2 overflow-hidden rounded-xl border border-line bg-surface">
+                  {history.map((version, index) => (
+                    <div
+                      key={`${version.updatedAt}-${index}`}
+                      className="flex items-center justify-between gap-3 border-b border-line px-4 py-3 last:border-0"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-[12.5px] font-medium text-ink">
+                          Saved {timeAgo(new Date(version.updatedAt).getTime())}
+                        </div>
+                        <div className="mt-0.5 truncate text-[11.5px] text-muted">
+                          {version.title}
+                          {version.username ? ` · ${version.username}` : ''}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn-secondary h-8 shrink-0 px-2.5 text-[12px]"
+                        onClick={() => onRestoreVersion(version.updatedAt)}
+                      >
+                        <Icon name="undo" size={13} /> Restore
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-1.5 text-[11px] leading-relaxed text-faint">
+                  Previous versions stay encrypted with the vault. Restoring one keeps the current version in history.
+                </p>
+              </div>
+            )}
+
             <div className="mt-8 border-t border-line pt-3 text-[11px] text-faint">
               Created {timeAgo(new Date(entry.createdAt).getTime())} · Updated{' '}
               {timeAgo(new Date(entry.updatedAt).getTime())}
@@ -348,7 +444,10 @@ const FILTERS = [
   { value: 'card', label: 'Cards', icon: 'card' },
   { value: 'note', label: 'Notes', icon: 'note' },
   { value: 'identity', label: 'Identities', icon: 'user' },
+  { value: 'trash', label: 'Trash', icon: 'trash' },
 ] as const
+
+type Filter = (typeof FILTERS)[number]['value']
 
 function NavGroupLabel({ children }: { children: React.ReactNode }) {
   return (
@@ -359,7 +458,7 @@ function NavGroupLabel({ children }: { children: React.ReactNode }) {
 export function VaultApp() {
   const { data, handle, mutate, lock, sync, error, lastSyncedAt, clearError } = useVault()
   const [query, setQuery] = useState('')
-  const [filter, setFilter] = useState<'all' | 'favorites' | EntryType>('all')
+  const [filter, setFilter] = useState<Filter>('all')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [editing, setEditing] = useState<Entry | null>(null)
   const [newMenuOpen, setNewMenuOpen] = useState(false)
@@ -367,6 +466,7 @@ export function VaultApp() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [generatorOpen, setGeneratorOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<Entry | null>(null)
+  const [deleteForeverTarget, setDeleteForeverTarget] = useState<Entry | null>(null)
   const [railOpen, setRailOpen] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
 
@@ -386,15 +486,24 @@ export function VaultApp() {
   }, [lock])
 
   const entries = data?.entries ?? []
+  const trash = data?.trash ?? []
 
   const visible = useMemo(() => {
-    const filtered = entries.filter((entry) => {
+    const source = filter === 'trash' ? trash : entries
+    const filtered = source.filter((entry) => {
       if (filter === 'favorites' && !entry.favorite) return false
-      if (filter !== 'all' && filter !== 'favorites' && entry.type !== filter) return false
+      if (
+        filter !== 'all' &&
+        filter !== 'favorites' &&
+        filter !== 'trash' &&
+        entry.type !== filter
+      ) {
+        return false
+      }
       return matchesQuery(entry, query)
     })
-    return sortEntries(filtered)
-  }, [entries, filter, query])
+    return filter === 'trash' ? sortTrash(filtered) : sortEntries(filtered)
+  }, [entries, trash, filter, query])
 
   const counts = useMemo(() => {
     const byType = (type: EntryType) => entries.filter((entry) => entry.type === type).length
@@ -405,31 +514,42 @@ export function VaultApp() {
       card: byType('card'),
       note: byType('note'),
       identity: byType('identity'),
+      trash: trash.length,
     } as Record<string, number>
-  }, [entries])
+  }, [entries, trash])
 
-  const selected = entries.find((entry) => entry.id === selectedId) ?? null
+  const selected = (filter === 'trash' ? trash : entries).find((entry) => entry.id === selectedId) ?? null
+  const history = selected && filter !== 'trash' ? (data?.history[selected.id] ?? []) : []
   const activeFilter = FILTERS.find((item) => item.value === filter) ?? FILTERS[0]
 
-  function upsert(entry: Entry) {
-    mutate((current) => {
-      const exists = current.entries.some((item) => item.id === entry.id)
-      return {
-        ...current,
-        entries: exists
-          ? current.entries.map((item) => (item.id === entry.id ? entry : item))
-          : [entry, ...current.entries],
-      }
-    })
+  function saveEntry(entry: Entry, record = true) {
+    mutate((current) => upsertEntry(current, entry, record))
   }
 
-  function remove(id: string) {
-    mutate((current) => ({ ...current, entries: current.entries.filter((entry) => entry.id !== id) }))
+  function moveToTrash(id: string) {
+    mutate((current) => trashEntry(current, id))
     if (selectedId === id) setSelectedId(null)
   }
 
+  function restore(id: string) {
+    mutate((current) => restoreEntry(current, id))
+    setFilter('all')
+    setQuery('')
+    setSelectedId(id)
+  }
+
+  function restoreHistory(entryId: string, updatedAt: string) {
+    mutate((current) => restoreVersion(current, entryId, updatedAt))
+  }
+
+  function deleteForever(id: string) {
+    mutate((current) => deleteTrashedEntry(current, id))
+    if (selectedId === id) setSelectedId(null)
+    setDeleteForeverTarget(null)
+  }
+
   function toggleFavorite(entry: Entry) {
-    upsert(touch({ ...entry, favorite: !entry.favorite }))
+    saveEntry(touch({ ...entry, favorite: !entry.favorite }), false)
   }
 
   function startCreate(type: EntryType) {
@@ -446,7 +566,15 @@ export function VaultApp() {
         cta: 'Clear search',
         onCta: () => setQuery(''),
       }
-    : entries.length === 0
+    : filter === 'trash'
+      ? {
+          title: 'Trash is empty',
+          body: 'Items you delete stay here until you remove them permanently.',
+          icon: 'trash',
+          cta: 'Browse all items',
+          onCta: () => setFilter('all'),
+        }
+      : entries.length === 0
       ? {
           title: 'Nothing here yet',
           body: 'Add a login, note, card, or identity. Everything is encrypted before it is saved.',
@@ -634,47 +762,49 @@ export function VaultApp() {
               {visible.length} {visible.length === 1 ? 'item' : 'items'}
             </p>
           </div>
-          <div className="relative">
-            <button
-              type="button"
-              className="btn-primary h-9 px-2.5 text-[12px] sm:h-8"
-              onClick={() => setNewMenuOpen((prev) => !prev)}
-              aria-label="New item"
-              aria-haspopup="menu"
-              aria-expanded={newMenuOpen}
-            >
-              <Icon name="plus" size={15} />
-              <span className="hidden sm:inline">New item</span>
-            </button>
-            {newMenuOpen && (
-              <>
-                <button
-                  type="button"
-                  className="fixed inset-0 z-30 cursor-default"
-                  aria-label="Close menu"
-                  onClick={() => setNewMenuOpen(false)}
-                />
-                <div
-                  role="menu"
-                  aria-label="New item"
-                  className="absolute top-10 right-0 z-40 w-44 rounded-lg border border-line bg-surface p-1.5 shadow-float rise"
-                >
-                  {(Object.keys(TYPE_META) as EntryType[]).map((type) => (
-                    <button
-                      key={type}
-                      type="button"
-                      role="menuitem"
-                      onClick={() => startCreate(type)}
-                      className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[12.5px] text-ink hover:bg-surface-3"
-                    >
-                      <Icon name={TYPE_META[type].icon} size={14} className="text-faint" />
-                      {TYPE_META[type].label}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
+          {filter !== 'trash' && (
+            <div className="relative">
+              <button
+                type="button"
+                className="btn-primary h-9 px-2.5 text-[12px] sm:h-8"
+                onClick={() => setNewMenuOpen((prev) => !prev)}
+                aria-label="New item"
+                aria-haspopup="menu"
+                aria-expanded={newMenuOpen}
+              >
+                <Icon name="plus" size={15} />
+                <span className="hidden sm:inline">New item</span>
+              </button>
+              {newMenuOpen && (
+                <>
+                  <button
+                    type="button"
+                    className="fixed inset-0 z-30 cursor-default"
+                    aria-label="Close menu"
+                    onClick={() => setNewMenuOpen(false)}
+                  />
+                  <div
+                    role="menu"
+                    aria-label="New item"
+                    className="absolute top-10 right-0 z-40 w-44 rounded-lg border border-line bg-surface p-1.5 shadow-float rise"
+                  >
+                    {(Object.keys(TYPE_META) as EntryType[]).map((type) => (
+                      <button
+                        key={type}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => startCreate(type)}
+                        className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[12.5px] text-ink hover:bg-surface-3"
+                      >
+                        <Icon name={TYPE_META[type].icon} size={14} className="text-faint" />
+                        {TYPE_META[type].label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="px-3 pt-3 pb-2">
@@ -689,7 +819,7 @@ export function VaultApp() {
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               className="field h-8 pl-8 text-[12.5px]"
-              placeholder="Search vault"
+              placeholder={filter === 'trash' ? 'Search trash' : 'Search vault'}
               aria-label="Search vault"
             />
             {query ? (
@@ -726,7 +856,13 @@ export function VaultApp() {
           )}
 
           {visible.map((entry) => {
-            const subtitle = entrySubtitle(entry)
+            const subtitle =
+              filter === 'trash'
+                ? {
+                    text: `Deleted ${timeAgo(new Date(entry.deletedAt ?? entry.updatedAt).getTime())}`,
+                    mono: false,
+                  }
+                : entrySubtitle(entry)
             return (
             <button
               key={entry.id}
@@ -804,7 +940,7 @@ export function VaultApp() {
             }}
             onSave={(entry) => {
               const saved = entry.id ? entry : { ...entry, id: crypto.randomUUID() }
-              upsert(saved)
+              saveEntry(saved)
               setSelectedId(saved.id)
               setEditing(null)
             }}
@@ -812,11 +948,39 @@ export function VaultApp() {
         ) : selected ? (
           <EntryDetail
             entry={selected}
+            history={history}
             onEdit={() => setEditing(selected)}
             onDelete={() => setDeleteTarget(selected)}
             onToggleFavorite={() => toggleFavorite(selected)}
             onBack={() => setSelectedId(null)}
+            onRestoreVersion={(updatedAt) => restoreHistory(selected.id, updatedAt)}
+            trashed={filter === 'trash'}
+            onRestore={filter === 'trash' ? () => restore(selected.id) : undefined}
+            onDeleteForever={
+              filter === 'trash' ? () => setDeleteForeverTarget(selected) : undefined
+            }
           />
+        ) : filter === 'trash' ? (
+          <div className="flex h-full items-center justify-center overflow-y-auto px-5 py-10">
+            <div className="w-full max-w-[420px] text-center">
+              <span className="mx-auto flex size-14 items-center justify-center rounded-2xl border border-line bg-surface-2 text-faint">
+                <Icon name="trash" size={24} />
+              </span>
+              <h2 className="mt-5 text-[18px] font-semibold tracking-[-0.015em]">
+                {trash.length === 0 ? 'Trash is empty' : 'Select an item'}
+              </h2>
+              <p className="mx-auto mt-1.5 max-w-[38ch] text-[13px] leading-relaxed text-muted">
+                {trash.length === 0
+                  ? 'Items you delete stay here until you remove them permanently.'
+                  : 'Choose something from the trash to restore it or delete it permanently.'}
+              </p>
+              {trash.length === 0 && (
+                <button type="button" className="btn-secondary mt-5" onClick={() => setFilter('all')}>
+                  Browse all items
+                </button>
+              )}
+            </div>
+          </div>
         ) : entries.length > 0 && visible.length === 0 ? (
           <div className="flex h-full items-center justify-center overflow-y-auto px-5 py-10">
             <div className="w-full max-w-[420px] text-center">
@@ -887,12 +1051,12 @@ export function VaultApp() {
       <Modal
         open={Boolean(deleteTarget)}
         onClose={() => setDeleteTarget(null)}
-        title="Delete item"
+        title="Move to trash"
         width="max-w-sm"
       >
         <p className="text-[13px] leading-relaxed text-muted">
-          <span className="font-medium text-ink">{deleteTarget?.title}</span> will be removed from the vault. This cannot
-          be undone.
+          <span className="font-medium text-ink">{deleteTarget?.title}</span> will move to Trash. You can restore it
+          later from the Trash view.
         </p>
         <div className="mt-5 flex justify-end gap-2">
           <button type="button" className="btn-secondary" onClick={() => setDeleteTarget(null)}>
@@ -900,13 +1064,39 @@ export function VaultApp() {
           </button>
           <button
             type="button"
-            className="btn-danger-solid"
+            className="btn-primary"
             onClick={() => {
-              if (deleteTarget) remove(deleteTarget.id)
+              if (deleteTarget) moveToTrash(deleteTarget.id)
               setDeleteTarget(null)
             }}
           >
-            <Icon name="trash" size={14} /> Delete
+            <Icon name="trash" size={14} /> Move to trash
+          </button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={Boolean(deleteForeverTarget)}
+        onClose={() => setDeleteForeverTarget(null)}
+        title="Delete permanently"
+        width="max-w-sm"
+      >
+        <p className="text-[13px] leading-relaxed text-muted">
+          <span className="font-medium text-ink">{deleteForeverTarget?.title}</span> will be removed permanently,
+          including its version history. This cannot be undone.
+        </p>
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" className="btn-secondary" onClick={() => setDeleteForeverTarget(null)}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn-danger-solid"
+            onClick={() => {
+              if (deleteForeverTarget) deleteForever(deleteForeverTarget.id)
+            }}
+          >
+            <Icon name="trash" size={14} /> Delete permanently
           </button>
         </div>
       </Modal>

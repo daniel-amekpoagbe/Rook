@@ -105,9 +105,11 @@ the salt: the Poly1305 tag will not verify.
 Vault
 
 - Item types: login, secure note, card, identity
-- Create, edit, delete, favorite, tags
+- Create, edit, move to trash, restore, favorite, tags
+- Item history: the previous 20 versions stay encrypted, and any version can be restored
+- Trash: deleted items can be restored or permanently removed with their history
 - Full-text search across title, username, URL, notes, tags
-- Filters by type and favorites
+- Filters by type, favorites, and trash
 - Live TOTP codes (RFC 6238, SHA-1/6 digits/30 s) with expiry progress
 - Copy buttons everywhere; password masking with explicit reveal
 
@@ -135,7 +137,7 @@ Data
 - Encrypted backup export (self-contained, needs the master password; new backups use the
   `rook.vault` format, and pre-rename `keynest.vault` backups still import)
 - CSV export for portability (with an explicit plaintext warning)
-- Encrypted backup import, merged by item id
+- Encrypted backup import, merged by item id, including trash and version history
 - Import from Chrome CSV, 1Password CSV, Bitwarden JSON/CSV, and Rook CSV; parsed locally,
   with duplicate detection and a preview before anything is saved
 - Optimistic concurrency: the server rejects a save based on a stale version (`CONFLICT`)
@@ -173,7 +175,7 @@ empty and unlocks immediately.
 ### Tests
 
 ```bash
-npm test           # crypto, vault, generator, strength, TOTP, and import parsers
+npm test           # crypto, vault, history/trash migration, generator, strength, TOTP, and import parsers
 npm run typecheck
 ```
 
@@ -187,7 +189,7 @@ area and is run with Playwright against a live server.
 
 ```
 src/lib/crypto.ts          Argon2id, HKDF split, auth proof, AEAD helpers
-src/lib/vault.ts           entry schema (zod), seal/open, header AAD, search/sort
+src/lib/vault.ts           entry schema (zod), seal/open, header AAD, history/trash, search/sort
 src/lib/vault-context.tsx  unlock/register/save/re-key state machine, auto-lock, exports
 src/lib/import.ts          Chrome/1Password/Bitwarden/Rook parsers and duplicate fingerprints
 src/lib/generator.ts       unbiased CSPRNG password generation + entropy
@@ -213,18 +215,17 @@ src/routes/__root.tsx      document shell; VaultProvider lives above the router
 
 ## 7. Roadmap toward "80% of 1Password"
 
-Done: the vault, the crypto, the item types, TOTP, audit, generator, backups, rotation, and
-import from Chrome, 1Password, Bitwarden, and Rook CSV.
+Done: the vault, the crypto, the item types, TOTP, audit, generator, backups, rotation,
+item history, trash, and import from Chrome, 1Password, Bitwarden, and Rook CSV.
 
 Next, roughly in order of value:
 
-1. **Item history and trash** — keep previous versions encrypted; restore instead of delete.
-2. **Passkeys / WebAuthn** — store credentials and act as an authenticator.
-3. **Attachments** — encrypt file blobs separately, same key hierarchy.
-4. **Multi-device conflict UI** — the server already detects conflicts; surface a merge view.
-5. **Sharing** — public-key envelopes per recipient, so a shared item does not require
+1. **Passkeys / WebAuthn** — store credentials and act as an authenticator.
+2. **Attachments** — encrypt file blobs separately, same key hierarchy.
+3. **Multi-device conflict UI** — the server already detects conflicts; surface a merge view.
+4. **Sharing** — public-key envelopes per recipient, so a shared item does not require
    sharing the vault key.
-6. **Email breach monitoring** — periodic HIBP checks for account addresses.
+5. **Email breach monitoring** — periodic HIBP checks for account addresses.
 
 Deliberately out of scope for now: a browser extension and autofill. Also out of scope for
 this personal build: team administration, SSO/SCIM, travel mode, and a hosted service.

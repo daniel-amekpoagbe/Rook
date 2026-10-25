@@ -19,6 +19,8 @@ import {
   emptyVault,
   entryFingerprint,
   isSupportedVaultFormat,
+  MAX_HISTORY_VERSIONS,
+  MAX_TRASH_ITEMS,
   openVault,
   openVaultWithFallback,
   sealVault,
@@ -384,7 +386,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       const room = 10000 - current.entries.length
       if (room <= 0) throw new Error('This vault is at the 10,000 item limit.')
 
-      const seen = new Set(current.entries.map(entryFingerprint))
+      const seen = new Set([...current.entries, ...current.trash].map(entryFingerprint))
       const accepted: Entry[] = []
       let skipped = 0
 
@@ -421,9 +423,40 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 
       // Merge by id so importing a backup never silently deletes newer local items.
       const local = dataRef.current ?? emptyVault()
-      const merged = new Map(local.entries.map((entry) => [entry.id, entry]))
-      for (const entry of imported.entries) merged.set(entry.id, entry)
-      const next: VaultData = { version: 2, entries: [...merged.values()] }
+      const mergedEntries = new Map(local.entries.map((entry) => [entry.id, entry]))
+      const mergedTrash = new Map(local.trash.map((entry) => [entry.id, entry]))
+
+      for (const entry of imported.entries) {
+        mergedEntries.set(entry.id, entry)
+        mergedTrash.delete(entry.id)
+      }
+      for (const entry of imported.trash) {
+        if (!mergedEntries.has(entry.id)) mergedTrash.set(entry.id, entry)
+      }
+
+      const mergedHistory = { ...local.history }
+      for (const [id, versions] of Object.entries(imported.history)) {
+        const byUpdatedAt = new Map<string, Entry>()
+        for (const version of [...(mergedHistory[id] ?? []), ...versions]) {
+          byUpdatedAt.set(version.updatedAt, version)
+        }
+        mergedHistory[id] = [...byUpdatedAt.values()]
+          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+          .slice(0, MAX_HISTORY_VERSIONS)
+      }
+
+      const trash = [...mergedTrash.values()].slice(0, MAX_TRASH_ITEMS)
+      const keptIds = new Set([...mergedEntries.keys(), ...trash.map((entry) => entry.id)])
+      for (const id of Object.keys(mergedHistory)) {
+        if (!keptIds.has(id)) delete mergedHistory[id]
+      }
+
+      const next: VaultData = {
+        ...local,
+        entries: [...mergedEntries.values()],
+        trash,
+        history: mergedHistory,
+      }
 
       dataRef.current = next
       setData(next)
