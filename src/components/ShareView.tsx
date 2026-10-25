@@ -1,7 +1,7 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react'
 import { getShareFn } from '~/server/api'
 import { decodeShareKey, formatShareRemaining, openShare, type SharePayload } from '~/lib/share'
-import { Icon, Spinner, ThemeToggle, cx, useCopyToClipboard } from './ui'
+import { Icon, Spinner, cx, useCopyToClipboard } from './ui'
 import { RookMark } from './RookMark'
 import { BrandIcon, brandCssVars, brandForEntry } from './BrandIcon'
 
@@ -37,26 +37,28 @@ function shareHref(url: string): string | undefined {
 
 function Header() {
   return (
-    <header className="flex h-16 shrink-0 items-center justify-between px-5 sm:px-8">
-      <a href="/" className="flex items-center gap-2.5" aria-label="Rook home">
-        <span className="flex size-8 items-center justify-center rounded-[10px] border border-line bg-white text-[#0a0b0e] shadow-rest">
-          <RookMark className="size-[18px]" />
-        </span>
-        <span className="text-[14px] font-semibold tracking-[-0.02em]">Rook</span>
-      </a>
-      <ThemeToggle />
+    <header className="share-header">
+      <div className="share-header-content">
+        <a href="/" className="share-brand" aria-label="Rook home">
+          <span className="share-brand-mark">
+            <RookMark className="size-[17px]" />
+          </span>
+          <span>Rook</span>
+        </a>
+        <p className="share-header-message">Someone shared an item with you.</p>
+      </div>
     </header>
   )
 }
 
 function Shell({ children }: { children: ReactNode }) {
   return (
-    <div className="flex min-h-dvh flex-col bg-canvas">
+    <div className="share-shell">
       <Header />
-      <main className="flex flex-1 justify-center px-4 py-8 sm:px-6 sm:py-12">
-        <div className="w-full max-w-[640px]">{children}</div>
+      <main className="share-main">
+        <div className="share-content">{children}</div>
       </main>
-      <footer className="px-5 pb-5 text-center text-[10.5px] text-faint">
+      <footer className="share-footer">
         End-to-end encrypted · Rook never sees this password
       </footer>
     </div>
@@ -65,13 +67,13 @@ function Shell({ children }: { children: ReactNode }) {
 
 function ErrorCard({ message }: { message: string }) {
   return (
-    <div className="rise rounded-xl border border-line bg-surface p-6 text-center shadow-rest">
+    <div className="share-error rise">
       <span className="mx-auto flex size-11 items-center justify-center rounded-xl border border-danger/20 bg-danger-soft text-danger">
         <Icon name="alert" size={20} />
       </span>
-      <h1 className="mt-4 text-[18px] font-semibold tracking-[-0.015em]">Link unavailable</h1>
-      <p className="mx-auto mt-1.5 max-w-[34ch] text-[12.5px] leading-relaxed text-muted">{message}</p>
-      <a href="/" className="btn-secondary mt-5">
+      <h1 className="mt-4 text-[18px] font-semibold tracking-[-0.015em] text-white">Link unavailable</h1>
+      <p className="mx-auto mt-1.5 max-w-[34ch] text-[12.5px] leading-relaxed text-[#a1a8b3]">{message}</p>
+      <a href="/" className="share-button share-button-secondary mt-5">
         Open Rook
       </a>
     </div>
@@ -93,12 +95,12 @@ function ShareField({
   const { copied, copy } = useCopyToClipboard()
 
   return (
-    <div className="group flex items-start justify-between gap-4 border-b border-line px-4 py-3.5 last:border-0">
+    <div className="share-field group flex items-start justify-between gap-4 border-b px-4 py-3.5 last:border-0">
       <div className="min-w-0 flex-1">
-        <div className="text-[11px] font-medium text-muted">{label}</div>
+        <div className="text-[11px] font-medium text-[#9ba3b0]">{label}</div>
         <div
           className={cx(
-            'mt-1 break-all text-[14px] text-ink',
+            'mt-1 break-all text-[14px] text-[#f3f4f6]',
             secret && 'font-mono tracking-wide',
             secret && !revealed && 'select-none tracking-[0.22em]',
           )}
@@ -110,7 +112,7 @@ function ShareField({
               href={href}
               target="_blank"
               rel="noreferrer noopener"
-              className="inline-flex items-center gap-1 break-all hover:text-accent"
+              className="inline-flex items-center gap-1 break-all text-[#8db6ff] hover:text-white"
             >
               {value}
               <Icon name="arrowUpRight" size={12} className="shrink-0 text-faint" />
@@ -124,7 +126,7 @@ function ShareField({
         {secret && (
           <button
             type="button"
-            className="icon-btn size-7"
+            className="share-icon-button"
             onClick={() => setRevealed((prev) => !prev)}
             aria-label={revealed ? 'Hide password' : 'Reveal password'}
           >
@@ -133,7 +135,7 @@ function ShareField({
         )}
         <button
           type="button"
-          className="icon-btn size-7"
+          className="share-icon-button"
           onClick={() => copy(value)}
           aria-label={`Copy ${label} to clipboard`}
         >
@@ -157,89 +159,61 @@ function ReadyCard({
   expiresAt: number
   now: number
 }) {
-  const { copied, copy } = useCopyToClipboard()
   const websiteHref = payload.url ? shareHref(payload.url) : undefined
   const brand = brandForEntry(payload.url, payload.title)
   const initial = payload.title.trim().charAt(0).toUpperCase()
   const remaining = formatShareRemaining(expiresAt, now)
+  const expiresLabel = new Date(expiresAt)
+    .toLocaleString('en-US', {
+      month: 'numeric',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    })
+    .replace(', ', ' at ')
 
   return (
-    <div className="rise">
-      <div className="flex items-start gap-4">
+    <div className="share-ready rise">
+      <div className="share-expiry">
+        <Icon name="clock" size={13} />
+        <span>You can view this item until {expiresLabel}</span>
+      </div>
+
+      <div className="share-intro">
         <span
-          className={cx('avatar shrink-0', brand && 'avatar-brand')}
+          className={cx('share-entry-icon avatar shrink-0', brand && 'avatar-brand')}
           style={{
             ...(brand ? brandCssVars(brand) : { '--hue': 214 }),
-            width: 56,
-            height: 56,
-            fontSize: 20,
+            width: 52,
+            height: 52,
+            fontSize: 19,
           } as CSSProperties}
           aria-hidden="true"
         >
           {brand ? <BrandIcon brand={brand} size={34} /> : initial || <Icon name="key" size={24} />}
         </span>
-        <div className="min-w-0 flex-1 pt-0.5">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="chip normal-case tracking-normal">Shared password</span>
-            <span className="inline-flex items-center gap-1 rounded-full border border-line bg-surface px-2 py-0.5 text-[10.5px] text-muted">
-              <Icon name="clock" size={11} className="text-faint" />
-              Expires in {remaining}
-            </span>
-          </div>
-          <h1 className="mt-2 text-[26px] leading-[1.15] font-semibold tracking-[-0.03em] break-words sm:text-[28px]">
+        <div className="min-w-0 flex-1">
+          <h1 className="text-[23px] leading-[1.15] font-semibold tracking-[-0.03em] break-words text-white sm:text-[25px]">
             {payload.title}
           </h1>
-          <p className="mt-1 text-[12.5px] text-muted">Shared by {payload.from || 'a Rook user'}</p>
         </div>
       </div>
 
-      <div className="mt-6 flex flex-wrap gap-2">
-        <button
-          type="button"
-          className="btn-primary h-9 px-3.5 text-[12.5px]"
-          onClick={() => copy(payload.password)}
-        >
-          <Icon name={copied ? 'check' : 'copy'} size={14} />
-          {copied ? 'Copied' : 'Copy password'}
-        </button>
-        {websiteHref && (
-          <a
-            className="btn-secondary h-9 px-3.5 text-[12.5px]"
-            href={websiteHref}
-            target="_blank"
-            rel="noreferrer noopener"
-          >
-            <Icon name="globe" size={14} />
-            Open website
-            <Icon name="arrowUpRight" size={12} className="text-faint" />
-          </a>
-        )}
-        {payload.username && (
-          <button
-            type="button"
-            className="btn-secondary h-9 px-3.5 text-[12.5px]"
-            onClick={() => copy(payload.username!)}
-          >
-            <Icon name="copy" size={14} />
-            Copy username
-          </button>
-        )}
-      </div>
-
-      <div className="mt-6 overflow-hidden rounded-xl border border-line bg-surface shadow-rest">
+      <div className="share-fields mt-5">
         {payload.username && <ShareField label="Username" value={payload.username} />}
         <ShareField label="Password" value={payload.password} secret />
         {payload.url && <ShareField label="Website" value={payload.url} href={websiteHref} />}
       </div>
 
-      <div className="mt-4 flex items-start gap-2 text-[11px] leading-relaxed text-faint">
-        <Icon name="shield" size={13} className="mt-0.5 shrink-0 text-success" />
+      <div className="mt-4 flex items-start gap-2 text-[11px] leading-relaxed text-[#8e96a3]">
+        <Icon name="shield" size={13} className="mt-0.5 shrink-0 text-[#43d895]" />
         <span>
           This link expires in {remaining}. Anyone with the link can open these credentials, so share
           it only with the intended recipient.
         </span>
       </div>
-      <p className="mt-2 text-[10.5px] text-faint">
+      <p className="mt-2 text-[10.5px] text-[#727b89]">
         Expires {new Date(expiresAt).toLocaleString()}
       </p>
     </div>
