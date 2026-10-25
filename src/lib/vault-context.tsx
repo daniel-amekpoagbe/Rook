@@ -21,6 +21,7 @@ import {
   isSupportedVaultFormat,
   MAX_ENTRIES,
   MAX_HISTORY_VERSIONS,
+  MAX_TOMBSTONES,
   MAX_TRASH_ITEMS,
   mergeVaultData,
   openVault,
@@ -29,6 +30,7 @@ import {
   VAULT_FORMAT_VERSION,
   type EncryptedVault,
   type Entry,
+  type Tombstone,
   type VaultData,
 } from './vault'
 import {
@@ -567,7 +569,12 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       }
 
       if (accepted.length > 0) {
-        const next: VaultData = { ...current, entries: [...current.entries, ...accepted] }
+        const acceptedIds = new Set(accepted.map((entry) => entry.id))
+        const next: VaultData = {
+          ...current,
+          entries: [...current.entries, ...accepted],
+          tombstones: current.tombstones.filter((item) => !acceptedIds.has(item.id)),
+        }
         dataRef.current = next
         setData(next)
         queueSave(next)
@@ -617,11 +624,30 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         if (!keptIds.has(id)) delete mergedHistory[id]
       }
 
+      // Importing a backup is an explicit restore. Drop tombstones for items
+      // the backup supplies, but retain unrelated permanent-delete markers.
+      const importedIds = new Set(
+        [...imported.entries, ...imported.trash].map((entry) => entry.id),
+      )
+      const tombstoneById = new Map<string, Tombstone>()
+      for (const tombstone of [...local.tombstones, ...imported.tombstones]) {
+        const existing = tombstoneById.get(tombstone.id)
+        if (!existing || tombstone.deletedAt.localeCompare(existing.deletedAt) > 0) {
+          tombstoneById.set(tombstone.id, tombstone)
+        }
+      }
+      for (const id of importedIds) tombstoneById.delete(id)
+      for (const id of keptIds) tombstoneById.delete(id)
+      const tombstones = [...tombstoneById.values()]
+        .sort((a, b) => b.deletedAt.localeCompare(a.deletedAt))
+        .slice(0, MAX_TOMBSTONES)
+
       const next: VaultData = {
         ...local,
         entries: [...mergedEntries.values()],
         trash,
         history: mergedHistory,
+        tombstones,
       }
 
       dataRef.current = next

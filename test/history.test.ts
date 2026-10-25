@@ -18,7 +18,7 @@ import {
 
 const TEST_KDF = { ...newKdfConfig(), t: 1, m: 8192 }
 
-test('version 2 vaults migrate to the history and trash schema on read', () => {
+test('version 2 vaults migrate to the current schema on read', () => {
   const key = new Uint8Array(32).fill(11)
   const legacyEntry = newEntry('login', {
     title: 'Legacy login',
@@ -35,11 +35,30 @@ test('version 2 vaults migrate to the history and trash schema on read', () => {
   }
 
   const opened = openVault(sealed, key)
-  assert.equal(opened.version, 3)
+  assert.equal(opened.version, 4)
   assert.deepEqual(opened.trash, [])
   assert.deepEqual(opened.history, {})
+  assert.deepEqual(opened.tombstones, [])
   assert.equal(opened.entries[0]?.title, 'Legacy login')
   assert.equal(opened.entries[0]?.password, 'legacy-secret')
+})
+
+test('version 3 vaults gain permanent-delete tombstones on read', () => {
+  const key = new Uint8Array(32).fill(12)
+  const entry = newEntry('login', { title: 'Existing login', password: 'secret' })
+  const v3Data = { version: 3, entries: [entry], trash: [], history: {} }
+  const sealed = {
+    format: 'rook.vault' as const,
+    version: 1 as const,
+    kdf: TEST_KDF,
+    updatedAt: new Date().toISOString(),
+    ...encrypt(key, JSON.stringify(v3Data), headerAad(TEST_KDF, 'rook.vault')),
+  }
+
+  const opened = openVault(sealed, key)
+  assert.equal(opened.version, 4)
+  assert.deepEqual(opened.tombstones, [])
+  assert.equal(opened.entries[0]?.title, 'Existing login')
 })
 
 test('editing records the previous version, while favorite changes do not', () => {
@@ -102,6 +121,22 @@ test('permanently deleting a trashed item removes its version history', () => {
   data = deleteTrashedEntry(data, original.id)
   assert.equal(data.trash.length, 0)
   assert.equal(data.history[original.id], undefined)
+  assert.equal(data.tombstones[0]?.id, original.id)
+  assert.ok(data.tombstones[0]?.deletedAt)
+})
+
+test('re-adding an item clears its permanent-delete tombstone', () => {
+  const id = 'restored'
+  const tombstone = { id, deletedAt: '2026-01-03T00:00:00.000Z' }
+  const restored = {
+    ...newEntry('login', { title: 'Restored', password: 'secret' }),
+    id,
+    updatedAt: '2026-01-04T00:00:00.000Z',
+  }
+  const data = upsertEntry({ ...emptyVault(), tombstones: [tombstone] }, restored)
+
+  assert.equal(data.entries[0]?.id, id)
+  assert.deepEqual(data.tombstones, [])
 })
 
 test('restoring a version swaps content and keeps the replaced version recoverable', () => {

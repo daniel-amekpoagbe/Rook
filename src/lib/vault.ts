@@ -5,10 +5,11 @@ export const VAULT_FORMAT = 'rook.vault'
 /** Pre-rename backups remain readable; new saves use `rook.vault`. */
 export const LEGACY_VAULT_FORMAT = 'keynest.vault'
 export const VAULT_FORMAT_VERSION = 1
-export const VAULT_DATA_VERSION = 3
+export const VAULT_DATA_VERSION = 4
 export const MAX_ENTRIES = 10000
 export const MAX_HISTORY_VERSIONS = 20
 export const MAX_TRASH_ITEMS = 1000
+export const MAX_TOMBSTONES = 5000
 
 export type VaultFormat = typeof VAULT_FORMAT | typeof LEGACY_VAULT_FORMAT
 
@@ -54,10 +55,25 @@ export const entrySchema = z.object({
 
 export type Entry = z.infer<typeof entrySchema>
 
+export const tombstoneSchema = z.object({
+  id: z.string().min(1),
+  deletedAt: z.string(),
+})
+
+export type Tombstone = z.infer<typeof tombstoneSchema>
+
 /** Version 2 is the pre-history schema; it is migrated on read. */
 export const legacyVaultDataSchema = z.object({
   version: z.literal(2),
   entries: z.array(entrySchema).max(MAX_ENTRIES),
+})
+
+/** Version 3 added history and trash but had no permanent-delete tombstones. */
+export const historyVaultDataSchema = z.object({
+  version: z.literal(3),
+  entries: z.array(entrySchema).max(MAX_ENTRIES),
+  trash: z.array(entrySchema).max(MAX_TRASH_ITEMS).default([]),
+  history: z.record(z.string(), z.array(entrySchema).max(MAX_HISTORY_VERSIONS)).default({}),
 })
 
 export const vaultDataSchema = z.object({
@@ -65,6 +81,7 @@ export const vaultDataSchema = z.object({
   entries: z.array(entrySchema).max(MAX_ENTRIES),
   trash: z.array(entrySchema).max(MAX_TRASH_ITEMS).default([]),
   history: z.record(z.string(), z.array(entrySchema).max(MAX_HISTORY_VERSIONS)).default({}),
+  tombstones: z.array(tombstoneSchema).max(MAX_TOMBSTONES).default([]),
 })
 
 export type VaultData = z.infer<typeof vaultDataSchema>
@@ -96,16 +113,27 @@ export function headerAad(kdf: KdfConfig, format: VaultFormat = VAULT_FORMAT): s
 }
 
 export function emptyVault(): VaultData {
-  return { version: VAULT_DATA_VERSION, entries: [], trash: [], history: {} }
+  return { version: VAULT_DATA_VERSION, entries: [], trash: [], history: {}, tombstones: [] }
 }
 
 /**
- * Vaults written before item history are still valid. Add the new collections
- * on read so the next save upgrades the payload without a separate migration.
+ * Older vaults are migrated on read: v2 gains history and trash, and v3 gains
+ * permanent-delete tombstones. The next save writes the current version.
  */
 export function parseVaultData(value: unknown): VaultData {
   const current = vaultDataSchema.safeParse(value)
   if (current.success) return current.data
+
+  const history = historyVaultDataSchema.safeParse(value)
+  if (history.success) {
+    return {
+      version: VAULT_DATA_VERSION,
+      entries: history.data.entries,
+      trash: history.data.trash,
+      history: history.data.history,
+      tombstones: [],
+    }
+  }
 
   const legacy = legacyVaultDataSchema.safeParse(value)
   if (legacy.success) {
@@ -114,6 +142,7 @@ export function parseVaultData(value: unknown): VaultData {
       entries: legacy.data.entries,
       trash: [],
       history: {},
+      tombstones: [],
     }
   }
 
@@ -257,10 +286,22 @@ export function recordHistory(history: VaultHistory, entry: Entry): VaultHistory
   }
 }
 
+/** Newest first, capped so permanent-delete markers cannot grow without bound. */
+function capTombstones(tombstones: Tombstone[]): Tombstone[] {
+  return [...tombstones]
+    .sort((a, b) => b.deletedAt.localeCompare(a.deletedAt))
+    .slice(0, MAX_TOMBSTONES)
+}
+
+function addTombstone(tombstones: Tombstone[], id: string, deletedAt: string): Tombstone[] {
+  return capTombstones([{ id, deletedAt }, ...tombstones.filter((item) => item.id !== id)])
+}
+
 export function upsertEntry(data: VaultData, entry: Entry, record = true): VaultData {
   const existing = data.entries.find((item) => item.id === entry.id)
+  const tombstones = data.tombstones.filter((item) => item.id !== entry.id)
   if (!existing) {
-    return { ...data, entries: [activeCopy(entry), ...data.entries] }
+    return { ...data, entries: [activeCopy(entry), ...data.entries], tombstones }
   }
 
   const contentChanged = entryContentKey(existing) !== entryContentKey(entry)
@@ -268,6 +309,7 @@ export function upsertEntry(data: VaultData, entry: Entry, record = true): Vault
     ...data,
     entries: data.entries.map((item) => (item.id === entry.id ? activeCopy(entry) : item)),
     history: record && contentChanged ? recordHistory(data.history, existing) : data.history,
+    tombstones,
   }
 }
 
@@ -278,11 +320,13 @@ export function trashEntry(data: VaultData, id: string): VaultData {
   const trashed: Entry = { ...activeCopy(entry), deletedAt: new Date().toISOString() }
   const nextTrash = [trashed, ...data.trash.filter((item) => item.id !== id)]
   const dropped = nextTrash.slice(MAX_TRASH_ITEMS)
+  const tombstones = data.tombstones.filter((item) => item.id !== id)
   if (dropped.length === 0) {
     return {
       ...data,
       entries: data.entries.filter((item) => item.id !== id),
       trash: nextTrash,
+      tombstones,
     }
   }
 
@@ -293,6 +337,7 @@ export function trashEntry(data: VaultData, id: string): VaultData {
     entries: data.entries.filter((item) => item.id !== id),
     trash: nextTrash.slice(0, MAX_TRASH_ITEMS),
     history,
+    tombstones,
   }
 }
 
@@ -304,16 +349,20 @@ export function restoreEntry(data: VaultData, id: string): VaultData {
     ...data,
     entries: [touch(activeCopy(trashed)), ...data.entries.filter((item) => item.id !== id)],
     trash: data.trash.filter((item) => item.id !== id),
+    tombstones: data.tombstones.filter((item) => item.id !== id),
   }
 }
 
 export function deleteTrashedEntry(data: VaultData, id: string): VaultData {
+  if (!data.trash.some((item) => item.id === id)) return data
+
   const history = { ...data.history }
   delete history[id]
   return {
     ...data,
     trash: data.trash.filter((item) => item.id !== id),
     history,
+    tombstones: addTombstone(data.tombstones, id, new Date().toISOString()),
   }
 }
 
@@ -332,6 +381,7 @@ export function restoreVersion(
       item.id === entryId ? touch(activeCopy(version)) : item,
     ),
     history: recordHistory(data.history, current),
+    tombstones: data.tombstones.filter((item) => item.id !== entryId),
   }
 }
 
@@ -387,7 +437,19 @@ function chooseItemState(
 export function mergeVaultData(local: VaultData, remote: VaultData): VaultData {
   const localStates = itemStates(local)
   const remoteStates = itemStates(remote)
-  const ids = new Set([...localStates.keys(), ...remoteStates.keys()])
+  const tombstonesById = new Map<string, Tombstone>()
+  for (const tombstone of [...local.tombstones, ...remote.tombstones]) {
+    const existing = tombstonesById.get(tombstone.id)
+    if (!existing || tombstone.deletedAt.localeCompare(existing.deletedAt) > 0) {
+      tombstonesById.set(tombstone.id, tombstone)
+    }
+  }
+
+  const ids = new Set([
+    ...localStates.keys(),
+    ...remoteStates.keys(),
+    ...tombstonesById.keys(),
+  ])
   const entries: Entry[] = []
   const trash: Entry[] = []
   const losingVersions: Entry[] = []
@@ -396,6 +458,17 @@ export function mergeVaultData(local: VaultData, remote: VaultData): VaultData {
     const localState = localStates.get(id)
     const remoteState = remoteStates.get(id)
     const winner = chooseItemState(localState, remoteState)
+    const tombstone = tombstonesById.get(id)
+
+    if (tombstone) {
+      if (!winner) continue
+      const winnerAt = winner.deleted ? winner.at : winner.entry.updatedAt
+      // A permanent deletion wins unless the surviving item was explicitly
+      // restored or edited afterwards. A newer item supersedes the tombstone.
+      if (winnerAt.localeCompare(tombstone.deletedAt) <= 0) continue
+      tombstonesById.delete(id)
+    }
+
     if (!winner) continue
 
     if (winner.deleted) {
@@ -455,6 +528,7 @@ export function mergeVaultData(local: VaultData, remote: VaultData): VaultData {
     entries,
     trash: mergedTrash,
     history,
+    tombstones: capTombstones([...tombstonesById.values()]),
   }
 }
 
