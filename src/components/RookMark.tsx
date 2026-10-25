@@ -1,0 +1,25 @@
+import type { SVGProps } from 'react'
+
+/**
+ * The Rook mark: a chess rook in three rounded, separated pieces. It is the one
+ * non-Lucide mark in the interface, so it is kept monochrome and geometric.
+ */
+export function RookMark({ title, ...props }: SVGProps<SVGSVGElement> & { title?: string }) {
+  return (
+    <svg
+      viewBox="0 0 100 100"
+      fill="currentColor"
+      width="1em"
+      height="1em"
+      role={title ? 'img' : undefined}
+      aria-hidden={title ? undefined : true}
+      focusable="false"
+      {...props}
+    >
+      {title ? <title>{title}</title> : null}
+      <path d="M31 8H35.9Q37.7 8 37.7 9.8V12.55A3.65 3.65 0 0 0 45 12.55V9.8Q45 8 46.8 8H53.2Q55 8 55 9.8V12.55A3.65 3.65 0 0 0 62.3 12.55V9.8Q62.3 8 64.1 8H69Q72 8 72 11V28.5Q72 33 67.5 33H32.5Q28 33 28 28.5V11Q28 8 31 8Z" />
+      <path d="M40 39H60Q61.5 39 61.5 40.5C61.5 47 65 52 68 58C70.5 62.5 74 66 75 68.5Q75.5 70.5 73 70.5H27Q24.5 70.5 25 68.5C26 66 29.5 62.5 32 58C35 52 38.5 47 38.5 40.5Q38.5 39 40 39Z" />
+      <path d="M21 76H79Q85 76 85 82V86Q85 92 79 92H21Q15 92 15 86V82Q15 76 21 76Z" />
+    </svg>
+  )
+}
