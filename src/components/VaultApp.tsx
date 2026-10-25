@@ -21,6 +21,7 @@ import { EntryForm, GeneratorModal, TYPE_META, newDraft } from './EntryEditor'
 import { SettingsModal } from './SettingsPanel'
 import { Icon, Modal, ThemeToggle, cx, timeAgo, useCopyToClipboard } from './ui'
 import { RookMark } from './RookMark'
+import { BrandIcon, brandForEntry } from './BrandIcon'
 
 const AVATAR_HUES = [214, 262, 168, 32, 342, 190, 12, 285]
 
@@ -31,6 +32,7 @@ function avatarHue(seed: string): number {
 }
 
 function EntryAvatar({ entry, size = 36 }: { entry: Entry; size?: number }) {
+  const brand = entry.type === 'login' ? brandForEntry(entry.url, entry.title) : null
   const seed = hostOf(entry.url) ?? entry.title
   const hue = avatarHue(seed)
   const initial = entry.title.trim().charAt(0).toUpperCase()
@@ -40,7 +42,11 @@ function EntryAvatar({ entry, size = 36 }: { entry: Entry; size?: number }) {
       style={{ '--hue': hue, width: size, height: size, fontSize: size >= 44 ? 16 : 13 } as CSSProperties}
       aria-hidden="true"
     >
-      {initial || <Icon name={TYPE_META[entry.type].icon} size={size >= 44 ? 19 : 16} />}
+      {brand ? (
+        <BrandIcon brand={brand} size={size >= 44 ? 27 : 22} />
+      ) : (
+        initial || <Icon name={TYPE_META[entry.type].icon} size={size >= 44 ? 19 : 16} />
+      )}
     </span>
   )
 }

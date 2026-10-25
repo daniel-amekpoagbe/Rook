@@ -46,7 +46,6 @@ function PasswordField({
         onClick={() => setVisible((prev) => !prev)}
         className="absolute top-1/2 right-1 flex size-8 -translate-y-1/2 items-center justify-center rounded-md text-faint transition-colors hover:bg-surface-3 hover:text-ink"
         aria-label={visible ? 'Hide password' : 'Show password'}
-        tabIndex={-1}
       >
         <Icon name={visible ? 'eyeOff' : 'eye'} size={15} />
       </button>
@@ -162,75 +161,38 @@ export function LockScreen() {
   const shownError = localError ?? error
 
   return (
-    <div className="relative grid min-h-dvh bg-canvas lg:grid-cols-[minmax(0,1fr)_minmax(0,560px)]">
-      <ThemeToggle className="absolute top-4 right-4 z-20 bg-surface/80 backdrop-blur-sm lg:right-5" />
+    <div className="lock-screen relative min-h-dvh overflow-hidden bg-canvas">
+      <ThemeToggle className="absolute top-5 right-5 z-20 border-[#454545] bg-[#242424] text-[#d7d7d7] hover:bg-[#303030] hover:text-white" />
 
-      <aside className="relative hidden flex-col justify-between border-r border-line bg-surface-2 px-12 py-10 lg:flex xl:px-16">
-        <BrandMark size="lg" />
-
-        <div className="max-w-[440px]">
-          <p className="mb-3 inline-flex items-center gap-1.5 rounded-md border border-line bg-surface px-2 py-1 text-[11px] font-medium text-muted shadow-rest">
-            <span className="size-1.5 rounded-full bg-success" />
-            Zero-knowledge by construction
-          </p>
-          <h1 className="text-[32px] leading-[1.15] font-semibold tracking-[-0.03em] text-ink">
-            Your keys,
-            <br />
-            kept quiet.
-          </h1>
-          <p className="mt-3 max-w-[38ch] text-[14px] leading-relaxed text-muted">
-            Every item is encrypted in this browser before it is stored. The server holds ciphertext it cannot read.
-          </p>
-
-          <ul className="mt-8 space-y-5">
-            <TrustPoint icon="fingerprint" title="Derived on this device">
-              Argon2id turns your master password into a 256-bit key that never leaves the tab.
-            </TrustPoint>
-            <TrustPoint icon="key" title="Split, then sealed">
-              HKDF separates the auth key from the vault key. The server sees neither.
-            </TrustPoint>
-            <TrustPoint icon="shield" title="No recovery, by design">
-              Nobody, including the server, can reopen the vault without your password.
-            </TrustPoint>
-          </ul>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-faint">
-          <span className="inline-flex items-center gap-1.5">
-            <Icon name="lock" size={12} /> Argon2id · 64 MiB
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <Icon name="key" size={12} /> HKDF-SHA256
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <Icon name="shield" size={12} /> XChaCha20-Poly1305
-          </span>
-        </div>
-      </aside>
-
-      <main className="flex flex-col justify-center px-5 py-12 sm:px-8 lg:py-10">
-        <div className="mx-auto w-full max-w-[380px]">
-          <div className="mb-8 lg:hidden">
-            <BrandMark size="lg" />
-            <p className="mt-2 text-[13px] text-muted">Your vault is encrypted on this device.</p>
-          </div>
-
-          <div className="rounded-xl border border-line bg-surface p-5 shadow-rest sm:p-6">
-            <div className="mb-5">
-              <h2 className="text-[17px] font-semibold tracking-[-0.015em]">
-                {mode === 'create' ? 'Create your vault' : 'Welcome back'}
-              </h2>
-              <p className="mt-0.5 text-[12.5px] text-muted">
-                {mode === 'create'
-                  ? 'One password to remember. No recovery if it is lost.'
-                  : 'Unlock to decrypt your vault in this tab.'}
+      <div className="mx-auto grid min-h-dvh max-w-[1500px] lg:grid-cols-[minmax(0,1fr)_350px]">
+        <main className="flex flex-col justify-center px-5 py-12 sm:px-8 lg:px-14 xl:px-20">
+          <div className="mx-auto w-full max-w-[400px]">
+            <div className="mb-9 lg:hidden">
+              <BrandMark size="lg" />
+              <p className="mt-3 max-w-[28ch] text-[13px] leading-relaxed text-muted">
+                Your encrypted vault, available only to you.
               </p>
             </div>
 
-            <div className="mb-5 grid grid-cols-2 gap-1 rounded-lg border border-line bg-surface-3 p-1">
+            <div className="mb-8">
+              <div className="mb-4 flex items-center gap-2 text-[11px] font-medium tracking-[0.08em] text-accent uppercase">
+                <span className="h-px w-6 bg-accent" />
+                {mode === 'create' ? 'Start private' : 'Welcome back'}
+              </div>
+              <h2 className="text-[28px] leading-tight font-semibold tracking-[-0.04em] text-ink">
+                {mode === 'create' ? 'Create your vault' : 'Unlock Rook'}
+              </h2>
+              <p className="mt-2 max-w-[36ch] text-[13px] leading-relaxed text-muted">
+                {mode === 'create'
+                  ? 'One strong password. No recovery path. That is the point.'
+                  : 'Your key is derived locally, then used to decrypt this vault.'}
+              </p>
+            </div>
+
+            <div className="mb-5 flex items-center justify-between border-b border-line">
               {(
                 [
-                  ['unlock', 'Unlock'],
+                  ['unlock', 'Unlock vault'],
                   ['create', 'Create vault'],
                 ] as const
               ).map(([value, label]) => (
@@ -243,18 +205,21 @@ export function LockScreen() {
                     clearError()
                   }}
                   className={cx(
-                    'h-8 rounded-md text-[12.5px] font-medium transition-all duration-150',
-                    mode === value
-                      ? 'bg-surface text-ink shadow-rest'
-                      : 'text-muted hover:text-ink',
+                    'relative -mb-px px-1 pb-3 text-[12.5px] font-medium transition-colors',
+                    mode === value ? 'text-ink' : 'text-muted hover:text-ink',
+                    mode === value && 'after:absolute after:right-0 after:bottom-0 after:left-0 after:h-0.5 after:bg-accent',
                   )}
+                  aria-pressed={mode === value}
                 >
                   {label}
                 </button>
               ))}
+              <span className="pb-3 text-[11px] text-faint">
+                <Icon name="shield" size={13} className="inline-block align-[-2px]" /> zero-knowledge
+              </span>
             </div>
 
-            <form onSubmit={submit} className="space-y-3.5">
+            <form onSubmit={submit} className="space-y-4">
               <div>
                 <label htmlFor="handle" className="label">
                   Username
@@ -262,7 +227,7 @@ export function LockScreen() {
                 <input
                   id="handle"
                   name="handle"
-                  className="field h-10"
+                  className="field h-11"
                   value={handle}
                   onChange={(event) => setHandle(event.target.value)}
                   placeholder="you@example.com"
@@ -274,15 +239,18 @@ export function LockScreen() {
               </div>
 
               <div>
-                <label htmlFor="master-password" className="label">
-                  Master password
-                </label>
+                <div className="flex items-baseline justify-between">
+                  <label htmlFor="master-password" className="label">
+                    Master password
+                  </label>
+                  {mode === 'create' && <span className="text-[10.5px] text-faint">10+ characters</span>}
+                </div>
                 <PasswordField
                   id="master-password"
                   name="master-password"
                   value={password}
                   onChange={setPassword}
-                  placeholder="Your master password"
+                  placeholder={mode === 'create' ? 'Choose a strong password' : 'Enter your master password'}
                   autoComplete={mode === 'create' ? 'new-password' : 'current-password'}
                 />
                 {mode === 'create' && password.length > 0 && (
@@ -312,23 +280,29 @@ export function LockScreen() {
               {shownError && (
                 <div
                   role="alert"
-                  className="flex items-start gap-2 rounded-lg border border-danger/20 bg-danger-soft px-3 py-2 text-[12px] leading-relaxed text-danger"
+                  className="flex items-start gap-2 rounded-lg border border-danger/20 bg-danger-soft px-3 py-2.5 text-[12px] leading-relaxed text-danger"
                 >
                   <Icon name="alert" size={14} className="mt-0.5 shrink-0" />
                   <span>{shownError}</span>
                 </div>
               )}
 
-              <button type="submit" className="btn-primary h-10 w-full" disabled={busy}>
+              <button type="submit" className="btn-primary h-11 w-full text-[13px]" disabled={busy}>
                 {busy ? (
                   <>
                     <Spinner size={15} />
-                    Deriving key…
+                    {mode === 'create' ? 'Encrypting your vault…' : 'Deriving your key…'}
                   </>
                 ) : mode === 'create' ? (
-                  'Create encrypted vault'
+                  <>
+                    <Icon name="lock" size={15} />
+                    Create encrypted vault
+                  </>
                 ) : (
-                  'Unlock'
+                  <>
+                    <Icon name="unlock" size={15} />
+                    Unlock vault
+                  </>
                 )}
               </button>
             </form>
@@ -336,36 +310,60 @@ export function LockScreen() {
             <p className="mt-4 text-center text-[11px] leading-relaxed text-faint">
               {mode === 'create'
                 ? 'Your master password never leaves this browser.'
-                : 'Your key is derived locally. Only a proof is sent.'}
+                : 'Only an authentication proof is sent. Your vault stays encrypted.'}
             </p>
-          </div>
 
-          <details className="group mt-4 rounded-xl border border-line bg-surface px-4 py-3">
-            <summary className="flex cursor-pointer list-none items-center justify-between text-[12px] font-medium text-muted marker:hidden hover:text-ink">
-              <span className="flex items-center gap-2">
-                <Icon name="shield" size={14} className="text-accent" />
-                How this vault is protected
-              </span>
-              <Icon name="chevronDown" size={14} className="transition-transform group-open:rotate-180" />
+            <details className="group mt-8 border-t border-line pt-4">
+              <summary className="flex cursor-pointer list-none items-center justify-between text-[12px] font-medium text-muted marker:hidden hover:text-ink">
+                <span className="flex items-center gap-2">
+                  <Icon name="shield" size={14} className="text-accent" />
+                  How your vault is protected
+                </span>
+                <Icon name="chevronDown" size={14} className="transition-transform group-open:rotate-180" />
+              </summary>
+              <ul className="mt-3 space-y-2.5 text-[11.5px] leading-relaxed text-muted">
+                <li>
+                  <span className="font-mono text-[11px] text-ink">Argon2id</span> turns your password into a 256-bit key
+                  using 64 MiB of memory and 3 passes.
+                </li>
+                <li>
+                  <span className="font-mono text-[11px] text-ink">HKDF-SHA256</span> separates the authentication key from
+                  the vault key.
+                </li>
+                <li>
+                  <span className="font-mono text-[11px] text-ink">XChaCha20-Poly1305</span> encrypts the complete vault
+                  before sync.
+                </li>
+              </ul>
+            </details>
+          </div>
+        </main>
+
+        <aside className="lock-guide hidden flex-col justify-center px-9 py-12 lg:flex">
+          <span className="text-[10px] font-medium tracking-[0.12em] text-muted uppercase">Guide</span>
+          <h2 className="mt-3 text-[22px] leading-tight font-medium tracking-[-0.025em] text-ink">
+            How secure is my password?
+          </h2>
+          <div className="lock-guide-art mt-6 flex h-[150px] items-center justify-center rounded-sm border border-line">
+            <div className="flex size-24 items-center justify-center rounded-full border border-accent/25 bg-white/70 text-[#19233a] shadow-rest">
+              <RookMark className="size-14" />
+            </div>
+          </div>
+          <p className="mt-6 text-[13px] leading-relaxed text-muted">
+            A strong master password is the only thing standing between your vault and an attacker. Rook makes guessing
+            expensive with Argon2id, but only you can choose a password worth protecting.
+          </p>
+          <details className="group mt-5 border-t border-line pt-4">
+            <summary className="flex cursor-pointer list-none items-center justify-between text-[12px] font-medium text-accent marker:hidden hover:text-accent-hover">
+              Read the security guide
+              <Icon name="arrowUpRight" size={14} />
             </summary>
-            <ul className="mt-3 space-y-2 border-t border-line pt-3 text-[11.5px] leading-relaxed text-muted">
-              <li>
-                <span className="font-mono text-[11px] text-ink">Argon2id</span> stretches your master password into a
-                256-bit key (64 MiB, 3 passes) so guessing is expensive.
-              </li>
-              <li>
-                <span className="font-mono text-[11px] text-ink">HKDF-SHA256</span> splits it into an auth key and a vault
-                key, so the server never sees either one.
-              </li>
-              <li>
-                <span className="font-mono text-[11px] text-ink">XChaCha20-Poly1305</span> encrypts the whole vault with a
-                fresh 24-byte nonce on every save.
-              </li>
-              <li>The server stores only ciphertext and a hash of a hash. A database leak reveals nothing.</li>
-            </ul>
+            <p className="mt-3 text-[12px] leading-relaxed text-muted">
+              Use a long, unique phrase or a generated password. Never reuse your Rook password anywhere else.
+            </p>
           </details>
-        </div>
-      </main>
+        </aside>
+      </div>
     </div>
   )
 }
