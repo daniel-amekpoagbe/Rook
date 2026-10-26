@@ -200,12 +200,14 @@ empty and unlocks immediately.
 ```bash
 npm test           # crypto, vault, conflict merge, tombstones, sharing, generator, strength, TOTP, and import parsers
 npm run typecheck
+npm run test:e2e   # build, start a disposable server, and run every Playwright flow
 ```
 
-The end-to-end browser flows (register → save → reload locks → wrong password rejected →
-correct password decrypts → generator, two-tab conflict merge/keep/use-server, and
-create → open without an account → revoke/expire a share link) live outside the repo in the
-development scratch area and are run with Playwright against a live server.
+The Playwright suite lives in `e2e/` and runs in CI. It covers register → save → reload
+locks → wrong password rejected → correct password decrypts → generator, import and
+duplicate detection, history/trash, sharing (including long and password-only items,
+revocation, expiry, and mobile), and two-tab conflict merge/keep/use-server. See
+`e2e/README.md` for running individual flows against an existing server.
 
 ---
 
