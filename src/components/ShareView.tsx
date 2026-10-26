@@ -1,6 +1,12 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { getShareFn } from '~/server/api'
-import { decodeShareKey, openShare, type SharePayload } from '~/lib/share'
+import {
+  decodeShareKey,
+  formatShareExpiry,
+  openShare,
+  safeShareHref,
+  type SharePayload,
+} from '~/lib/share'
 import { Icon, Spinner, cx, useCopyToClipboard } from './ui'
 import { RookMark } from './RookMark'
 import { BrandIcon, brandForEntry } from './BrandIcon'
@@ -22,29 +28,6 @@ function shareErrorMessage(error: unknown): string {
     return 'This link is incomplete or damaged. Ask the sender to copy the full link again.'
   }
   return 'This link could not be opened. It may have expired or been tampered with.'
-}
-
-function shareHref(url: string): string | undefined {
-  const candidate = url.includes('://') ? url : `https://${url}`
-  try {
-    const parsed = new URL(candidate)
-    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return parsed.toString()
-  } catch {
-    // Fall through: render the URL as plain text instead of an active link.
-  }
-  return undefined
-}
-
-function formatExpiry(expiresAt: number): string {
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'numeric',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  })
-    .format(new Date(expiresAt))
-    .replace(', ', ' at ')
 }
 
 function ShareHeader() {
@@ -141,7 +124,7 @@ function ShareField({
 }
 
 function WebsiteLink({ url }: { url: string }) {
-  const href = shareHref(url)
+  const href = safeShareHref(url)
   return (
     <div className="share-website">
       <div className="share-field-label">website</div>
@@ -162,7 +145,7 @@ function ReadyCard({ payload, expiresAt }: { payload: SharePayload; expiresAt: n
 
   return (
     <div className="share-ready rise">
-      <div className="share-expiry">You can view this item until {formatExpiry(expiresAt)}</div>
+      <div className="share-expiry">You can view this item until {formatShareExpiry(expiresAt)}</div>
       <div className="share-card-body">
         <div className="share-intro">
           <span className="share-entry-icon" aria-hidden="true">

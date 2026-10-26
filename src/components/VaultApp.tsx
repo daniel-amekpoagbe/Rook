@@ -18,6 +18,7 @@ import {
 import { AttachmentsSection } from './AttachmentsSection'
 import { AuditModal } from './AuditPanel'
 import { EntryForm, GeneratorModal, TYPE_META, newDraft } from './EntryEditor'
+import { ReceivedSharesDialog } from './ReceivedSharesDialog'
 import { SettingsModal } from './SettingsPanel'
 import { ShareDialog } from './ShareDialog'
 import { Icon, Modal, ThemeToggle, cx, timeAgo, useCopyToClipboard } from './ui'
@@ -330,7 +331,7 @@ function EntryDetail({
             )}
             {!trashed && entry.type === 'login' && entry.password && onShare && (
               <button type="button" className="btn-secondary" onClick={onShare}>
-                <Icon name="link" size={14} /> Share
+                <Icon name="mail" size={14} /> Share
               </button>
             )}
             {entry.url && (
@@ -503,6 +504,7 @@ export function VaultApp() {
   const [deleteTarget, setDeleteTarget] = useState<Entry | null>(null)
   const [deleteForeverTarget, setDeleteForeverTarget] = useState<Entry | null>(null)
   const [shareTarget, setShareTarget] = useState<Entry | null>(null)
+  const [receivedOpen, setReceivedOpen] = useState(false)
   const [railOpen, setRailOpen] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
 
@@ -739,6 +741,17 @@ export function VaultApp() {
 
           <NavGroupLabel>Tools</NavGroupLabel>
           <div className="space-y-0.5">
+            <button
+              type="button"
+              className="nav-item"
+              onClick={() => {
+                setReceivedOpen(true)
+                setRailOpen(false)
+              }}
+            >
+              <Icon name="mail" size={16} className="text-faint" />
+              <span className="flex-1 text-left">Shared with me</span>
+            </button>
             <button
               type="button"
               className="nav-item"
@@ -1114,6 +1127,7 @@ export function VaultApp() {
           handle={handle}
         />
       )}
+      <ReceivedSharesDialog open={receivedOpen} onClose={() => setReceivedOpen(false)} />
 
       <Modal
         open={Boolean(deleteTarget)}

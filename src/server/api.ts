@@ -7,7 +7,7 @@ import {
   MAX_ATTACHMENT_TOTAL_BYTES,
 } from '~/lib/attachments'
 import type { KdfConfig } from '~/lib/crypto'
-import { SHARE_TTL_MS } from '~/lib/share'
+import { RECIPIENT_SHARE_TTL_MS } from '~/lib/recipient-share'
 
 const kdfSchema = z.object({
   algorithm: z.literal('argon2id'),
@@ -39,7 +39,21 @@ const shareIdSchema = z
     'Invalid share id',
   )
 
+const authHashSchema = z.string().regex(/^[0-9a-f]{64}$/)
 const shareCiphertext = z.string().min(16).max(32_000)
+const identityPublicKey = z.string().min(40).max(1_024)
+const identityCiphertext = z.string().min(16).max(2_000)
+const wrappedShareKey = z.string().min(16).max(256)
+const recipientEnvelope = {
+  ephemeralPublicKey: identityPublicKey,
+  wrapNonce: vaultPayload.nonce,
+  wrappedKey: wrappedShareKey,
+}
+const identityPayload = {
+  publicKey: identityPublicKey,
+  ciphertext: identityCiphertext,
+  nonce: vaultPayload.nonce,
+}
 /** 10 MiB plaintext plus the 16-byte AEAD tag, base64-encoded. */
 const attachmentCiphertext = z.string().min(16).max(14_100_000)
 const attachmentSize = z.number().int().min(0).max(MAX_ATTACHMENT_BYTES)
@@ -50,7 +64,8 @@ const uuidSchema = z
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
     'Invalid id',
   )
-const MAX_ACTIVE_SHARES = 50
+const MAX_ACTIVE_RECIPIENT_SHARES = 50
+const MAX_ACTIVE_RECIPIENT_SHARES_PER_ENTRY = 20
 
 async function store() {
   const db = await import('./db.server')
@@ -93,6 +108,57 @@ export const meFn = createServerFn({ method: 'GET' }).handler(async () => {
   const user = session.currentUser()
   return { authenticated: Boolean(user), handle: user?.handle ?? null }
 })
+
+/**
+ * The identity private key is stored only as ciphertext under the vault key.
+ * The public key is a key-directory entry used by senders.
+ */
+export const getIdentityFn = createServerFn({ method: 'GET' }).handler(async () => {
+  const { db, session } = await store()
+  const user = session.requireUser()
+  const identity = db.getIdentity(user.id)
+  if (!identity) return null
+  return {
+    publicKey: identity.public_key,
+    ciphertext: identity.ciphertext,
+    nonce: identity.nonce,
+    createdAt: identity.created_at,
+    updatedAt: identity.updated_at,
+  }
+})
+
+export const createIdentityFn = createServerFn({ method: 'POST' })
+  .validator(z.object({ ...identityPayload, authHash: authHashSchema }))
+  .handler(async ({ data }) => {
+    const { db, session } = await store()
+    const user = session.requireUser()
+    // A session cookie alone must not let an attacker install a sharing key
+    // that future senders would wrap to. Proving the master password binds the
+    // identity directory entry to the vault owner.
+    const verified = await verifyCredentials(user.handle, data.authHash)
+    if (verified.user.id !== user.id) throw new Error('INVALID_CREDENTIALS')
+    const now = Date.now()
+    const created = db.createIdentity({
+      user_id: user.id,
+      public_key: data.publicKey,
+      ciphertext: data.ciphertext,
+      nonce: data.nonce,
+      created_at: now,
+      updated_at: now,
+    })
+    const identity = db.getIdentity(user.id)
+    if (!identity) throw new Error('IDENTITY_UNAVAILABLE')
+    return {
+      created,
+      identity: {
+        publicKey: identity.public_key,
+        ciphertext: identity.ciphertext,
+        nonce: identity.nonce,
+        createdAt: identity.created_at,
+        updatedAt: identity.updated_at,
+      },
+    }
+  })
 
 export const registerFn = createServerFn({ method: 'POST' })
   .validator(
@@ -294,71 +360,67 @@ export const pushVaultFn = createServerFn({ method: 'POST' })
     return { version: nextVersion, updatedAt: now }
   })
 
-/** Re-key: swap KDF salt, auth verifier and vault blob in one shot. */
+/** Re-key: swap KDF salt, auth verifier, vault blob, and identity envelope in one shot. */
 export const rotateFn = createServerFn({ method: 'POST' })
   .validator(
     z.object({
+      currentAuthHash: authHashSchema,
       kdf: kdfSchema,
-      authHash: z.string().regex(/^[0-9a-f]{64}$/),
+      authHash: authHashSchema,
       ...vaultPayload,
+      identity: z.object(identityPayload).optional(),
     }),
   )
   .handler(async ({ data }) => {
     const { db, session } = await store()
     const user = session.requireUser()
+    // Re-keying changes the verifier itself, so require proof of the current
+    // password in the same request. A stolen session cannot rotate the account
+    // out from under its owner.
+    const verified = await verifyCredentials(user.handle, data.currentAuthHash)
+    if (verified.user.id !== user.id) throw new Error('INVALID_CREDENTIALS')
+
     const current = db.getVault(user.id)
     if (!current) throw new Error('VAULT_MISSING')
 
-    db.updateUserAuth(user.id, JSON.stringify(data.kdf), session.sha256Hex(data.authHash))
+    const existingIdentity = db.getIdentity(user.id)
+    if (existingIdentity && !data.identity) throw new Error('IDENTITY_REQUIRED')
+    if (data.identity) {
+      if (!existingIdentity) throw new Error('IDENTITY_MISSING')
+      if (existingIdentity.public_key !== data.identity.publicKey) {
+        throw new Error('IDENTITY_CHANGED')
+      }
+    }
+
     const now = Date.now()
     const nextVersion = current.version + 1
-    db.upsertVault({
-      user_id: user.id,
-      ciphertext: data.ciphertext,
-      nonce: data.nonce,
-      version: nextVersion,
-      updated_at: now,
+    db.rotateUserKeys({
+      userId: user.id,
+      kdf: JSON.stringify(data.kdf),
+      authHash: session.sha256Hex(data.authHash),
+      vault: {
+        user_id: user.id,
+        ciphertext: data.ciphertext,
+        nonce: data.nonce,
+        version: nextVersion,
+        updated_at: now,
+      },
+      identity: data.identity
+        ? {
+            publicKey: data.identity.publicKey,
+            ciphertext: data.identity.ciphertext,
+            nonce: data.identity.nonce,
+            updatedAt: now,
+          }
+        : undefined,
     })
     return { version: nextVersion, updatedAt: now }
   })
 
 /**
- * Create an expiring share. The server receives only ciphertext; the key lives
- * in the recipient URL fragment and never reaches this handler.
+ * Legacy bearer-link read. New shares are recipient-bound, but links created
+ * before this release stay readable until their three-day expiry.
  */
-export const createShareFn = createServerFn({ method: 'POST' })
-  .validator(
-    z.object({
-      id: shareIdSchema,
-      entryId: entryIdSchema,
-      ciphertext: shareCiphertext,
-      nonce: vaultPayload.nonce,
-    }),
-  )
-  .handler(async ({ data }) => {
-    const { db, session } = await store()
-    const user = session.requireUser()
-    const now = Date.now()
-    db.deleteExpiredShares(now)
-    if (db.countActiveShares(user.id, now) >= MAX_ACTIVE_SHARES) {
-      throw new Error('SHARE_LIMIT')
-    }
-    if (db.getShare(data.id)) throw new Error('SHARE_EXISTS')
-
-    const expiresAt = now + SHARE_TTL_MS
-    db.createShare({
-      id: data.id,
-      user_id: user.id,
-      entry_id: data.entryId,
-      ciphertext: data.ciphertext,
-      nonce: data.nonce,
-      expires_at: expiresAt,
-      created_at: now,
-    })
-    return { id: data.id, expiresAt, createdAt: now }
-  })
-
-/** Public read used by the recipient page. Authentication is deliberately not required. */
 export const getShareFn = createServerFn({ method: 'GET' })
   .validator(z.object({ id: shareIdSchema }))
   .handler(async ({ data }) => {
@@ -376,23 +438,143 @@ export const getShareFn = createServerFn({ method: 'GET' })
     }
   })
 
-export const listSharesFn = createServerFn({ method: 'GET' })
+/** Resolve a recipient handle to the public half of their sharing identity. */
+export const lookupRecipientFn = createServerFn({ method: 'POST' })
+  .validator(z.object({ handle: handleSchema }))
+  .handler(async ({ data }) => {
+    const { db, session } = await store()
+    const user = session.requireUser()
+    const recipient = db.findUserByHandle(data.handle)
+    if (!recipient) throw new Error('RECIPIENT_NOT_FOUND')
+    if (recipient.id === user.id) throw new Error('RECIPIENT_SELF')
+    const identity = db.getIdentity(recipient.id)
+    if (!identity) throw new Error('RECIPIENT_NOT_READY')
+    return { handle: recipient.handle, publicKey: identity.public_key }
+  })
+
+/**
+ * Store one recipient-bound share. The server receives the payload ciphertext
+ * and a P-256 envelope for exactly one account; it never receives the random
+ * share key or either private key.
+ */
+export const createRecipientShareFn = createServerFn({ method: 'POST' })
+  .validator(
+    z.object({
+      id: shareIdSchema,
+      entryId: entryIdSchema,
+      recipientHandle: handleSchema,
+      recipientPublicKey: identityPublicKey,
+      ciphertext: shareCiphertext,
+      nonce: vaultPayload.nonce,
+      ...recipientEnvelope,
+    }),
+  )
+  .handler(async ({ data }) => {
+    const { db, session } = await store()
+    const user = session.requireUser()
+    const recipient = db.findUserByHandle(data.recipientHandle)
+    if (!recipient) throw new Error('RECIPIENT_NOT_FOUND')
+    if (recipient.id === user.id) throw new Error('RECIPIENT_SELF')
+    const identity = db.getIdentity(recipient.id)
+    if (!identity) throw new Error('RECIPIENT_NOT_READY')
+    if (identity.public_key !== data.recipientPublicKey) {
+      throw new Error('RECIPIENT_KEY_CHANGED')
+    }
+
+    const now = Date.now()
+    db.deleteExpiredRecipientShares(now)
+    if (db.hasActiveRecipientShare(user.id, recipient.id, data.entryId, now)) {
+      throw new Error('SHARE_ALREADY_EXISTS')
+    }
+    if (db.countActiveRecipientShares(user.id, now) >= MAX_ACTIVE_RECIPIENT_SHARES) {
+      throw new Error('SHARE_LIMIT')
+    }
+    if (
+      db.countActiveRecipientSharesForEntry(user.id, data.entryId, now) >=
+      MAX_ACTIVE_RECIPIENT_SHARES_PER_ENTRY
+    ) {
+      throw new Error('SHARE_ENTRY_LIMIT')
+    }
+
+    const expiresAt = now + RECIPIENT_SHARE_TTL_MS
+    try {
+      db.createRecipientShare({
+        id: data.id,
+        owner_id: user.id,
+        recipient_id: recipient.id,
+        entry_id: data.entryId,
+        ciphertext: data.ciphertext,
+        nonce: data.nonce,
+        ephemeral_public_key: data.ephemeralPublicKey,
+        wrap_nonce: data.wrapNonce,
+        wrapped_key: data.wrappedKey,
+        created_at: now,
+        expires_at: expiresAt,
+      })
+    } catch (error) {
+      if (String(error).includes('UNIQUE')) throw new Error('SHARE_ALREADY_EXISTS')
+      throw error
+    }
+
+    return {
+      id: data.id,
+      recipientHandle: recipient.handle,
+      expiresAt,
+      createdAt: now,
+    }
+  })
+
+export const listSentRecipientSharesFn = createServerFn({ method: 'GET' })
   .validator(z.object({ entryId: entryIdSchema }))
   .handler(async ({ data }) => {
     const { db, session } = await store()
     const user = session.requireUser()
     const now = Date.now()
-    db.deleteExpiredShares(now)
-    return { shares: db.listShares(user.id, data.entryId, now) }
+    db.deleteExpiredRecipientShares(now)
+    return { shares: db.listSentRecipientShares(user.id, data.entryId, now) }
   })
 
-export const revokeShareFn = createServerFn({ method: 'POST' })
+export const listReceivedRecipientSharesFn = createServerFn({ method: 'GET' }).handler(
+  async () => {
+    const { db, session } = await store()
+    const user = session.requireUser()
+    const now = Date.now()
+    db.deleteExpiredRecipientShares(now)
+    return { shares: db.listReceivedRecipientShares(user.id, now) }
+  },
+)
+
+export const revokeRecipientShareFn = createServerFn({ method: 'POST' })
   .validator(z.object({ id: shareIdSchema }))
   .handler(async ({ data }) => {
     const { db, session } = await store()
     const user = session.requireUser()
-    db.deleteShareForUser(data.id, user.id)
+    if (!db.deleteRecipientShareForOwner(data.id, user.id)) {
+      throw new Error('SHARE_NOT_FOUND')
+    }
     return { ok: true }
+  })
+
+/** A recipient can remove a share from their inbox; this is a self-revoke. */
+export const dismissReceivedRecipientShareFn = createServerFn({ method: 'POST' })
+  .validator(z.object({ id: shareIdSchema }))
+  .handler(async ({ data }) => {
+    const { db, session } = await store()
+    const user = session.requireUser()
+    if (!db.deleteRecipientShareForRecipient(data.id, user.id)) {
+      throw new Error('SHARE_NOT_FOUND')
+    }
+    return { ok: true }
+  })
+
+/** Permanent item deletion revokes every recipient share for that opaque id. */
+export const deleteRecipientSharesForEntryFn = createServerFn({ method: 'POST' })
+  .validator(z.object({ entryId: entryIdSchema }))
+  .handler(async ({ data }) => {
+    const { db, session } = await store()
+    const user = session.requireUser()
+    const deleted = db.deleteRecipientSharesForEntry(user.id, data.entryId)
+    return { deleted }
   })
 
 /**

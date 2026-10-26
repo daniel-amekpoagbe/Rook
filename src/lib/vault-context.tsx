@@ -31,6 +31,12 @@ import {
   type KdfConfig,
 } from './crypto'
 import {
+  createIdentity,
+  openIdentity,
+  sealIdentityPrivateKey,
+  type Identity,
+} from './recipient-share'
+import {
   deleteTrashedEntry,
   emptyVault,
   entryFingerprint,
@@ -52,11 +58,14 @@ import {
   type VaultData,
 } from './vault'
 import {
+  createIdentityFn,
   deleteAttachmentFn,
   deleteAttachmentsForEntryFn,
+  deleteRecipientSharesForEntryFn,
   finishPasskeyLoginFn,
   finishPasskeyRecoveryFn,
   getAttachmentFn,
+  getIdentityFn,
   kdfFn,
   listAttachmentsFn,
   loginFn,
@@ -117,6 +126,26 @@ const ERROR_MESSAGES: Record<string, string> = {
   ATTACHMENT_KEY_INVALID: 'The attachment key is invalid.',
   ATTACHMENT_CLEANUP_FAILED: 'The attachment was removed, but server cleanup failed.',
   ENTRY_NOT_FOUND: 'That item no longer exists.',
+  RECIPIENT_NOT_FOUND: 'No Rook account uses that handle.',
+  RECIPIENT_SELF: 'You already own this item.',
+  RECIPIENT_NOT_READY:
+    'That account is not ready to receive shares yet. Ask them to unlock Rook once, then try again.',
+  RECIPIENT_KEY_CHANGED: 'That account’s sharing key changed. Try again.',
+  SHARE_ALREADY_EXISTS: 'This item is already shared with that person.',
+  SHARE_LIMIT: 'You have reached the limit of 50 active shares. Revoke an older share first.',
+  SHARE_ENTRY_LIMIT: 'This item is shared with 20 people. Revoke one before adding another.',
+  SHARE_NOT_FOUND: 'That share no longer exists.',
+  SHARE_KEY_INVALID: 'The share key was invalid.',
+  SHARE_DECRYPT_FAILED:
+    'This share could not be decrypted for your account. It may have been created for a different identity.',
+  IDENTITY_REQUIRED:
+    'Your sharing identity must be unlocked before changing the master password.',
+  IDENTITY_MISSING: 'Your sharing identity is missing. Lock and unlock Rook, then try again.',
+  IDENTITY_CHANGED: 'Your sharing identity changed in another session. Unlock again and retry.',
+  IDENTITY_UNAVAILABLE: 'Your sharing identity is unavailable. Try again in a moment.',
+  IDENTITY_MISMATCH: 'Your sharing identity could not be verified.',
+  SHARE_CLEANUP_FAILED:
+    'The item was deleted, but its active shares could not be revoked. They expire within three days.',
 }
 
 export function friendlyError(error: unknown): string {
@@ -211,6 +240,7 @@ interface VaultContextValue {
     entryId: string,
     attachment: Attachment,
   ) => Promise<{ blob: Blob; name: string }>
+  ensureIdentity: () => Promise<Identity>
   deleteEntryPermanently: (entryId: string) => Promise<void>
   changeMasterPassword: (current: string, next: string) => Promise<void>
   exportBackup: () => EncryptedVault | null
@@ -250,6 +280,10 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const savingRef = useRef(false)
   const saveWaitersRef = useRef<SaveWaiter[]>([])
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const handleRef = useRef<string | null>(null)
+  const identityRef = useRef<Identity | null>(null)
+  const identityLoadRef = useRef<Promise<Identity> | null>(null)
+  const identityGenerationRef = useRef(0)
 
   const settleSaveWaiters = useCallback((error?: unknown) => {
     const waiters = saveWaitersRef.current
@@ -267,6 +301,87 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     pendingPasskeyRef.current = null
     setPendingPasskey(null)
   }, [])
+
+  /**
+   * Load or create the account's P-256 sharing identity. The private key is
+   * decrypted into memory only after the vault is unlocked and is dropped on
+   * lock. The server sees a public key plus ciphertext under the vault key.
+   */
+  const loadIdentity = useCallback(
+    async (userHandle: string, vaultKey: Uint8Array): Promise<Identity> => {
+      const current = identityRef.current
+      if (current) return current
+      if (identityLoadRef.current) return identityLoadRef.current
+
+      const generation = identityGenerationRef.current
+      const promise = (async () => {
+        const assertCurrent = () => {
+          if (
+            generation !== identityGenerationRef.current ||
+            secretsRef.current?.vaultKey !== vaultKey
+          ) {
+            throw new Error('Vault is locked')
+          }
+        }
+
+        let row = await getIdentityFn()
+        assertCurrent()
+        if (!row) {
+          const secrets = secretsRef.current
+          if (!secrets || secrets.vaultKey !== vaultKey) throw new Error('Vault is locked')
+          const authKey = deriveAuthKey(secrets.masterKey)
+          let authHash: string
+          try {
+            authHash = authProof(authKey)
+          } finally {
+            authKey.fill(0)
+          }
+          const generated = await createIdentity(userHandle, vaultKey)
+          assertCurrent()
+          const result = await createIdentityFn({
+            data: {
+              publicKey: generated.publicKey,
+              ciphertext: generated.ciphertext,
+              nonce: generated.nonce,
+              authHash,
+            },
+          })
+          assertCurrent()
+          if (result.created) {
+            const identity = {
+              publicKey: generated.publicKey,
+              privateKey: generated.privateKey,
+            }
+            identityRef.current = identity
+            return identity
+          }
+          row = result.identity
+        }
+
+        if (!row) throw new Error('IDENTITY_UNAVAILABLE')
+        const identity = await openIdentity(row, vaultKey, userHandle)
+        assertCurrent()
+        identityRef.current = identity
+        return identity
+      })()
+
+      identityLoadRef.current = promise
+      try {
+        return await promise
+      } finally {
+        if (identityLoadRef.current === promise) identityLoadRef.current = null
+      }
+    },
+    [],
+  )
+
+  const ensureIdentity = useCallback(async (): Promise<Identity> => {
+    if (identityRef.current) return identityRef.current
+    const secrets = secretsRef.current
+    const currentHandle = handleRef.current
+    if (!secrets || !currentHandle) throw new Error('Vault is locked')
+    return loadIdentity(currentHandle, secrets.vaultKey)
+  }, [loadIdentity])
 
   useEffect(() => {
     const stored = localStorage.getItem('rook.autoLockMinutes') ?? localStorage.getItem('keynest.autoLockMinutes')
@@ -288,7 +403,11 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     let cancelled = false
     const settle = (nextHandle: string | null) => {
       if (cancelled) return
-      setHandle((prev) => prev ?? nextHandle)
+      setHandle((prev) => {
+        const next = prev ?? nextHandle
+        handleRef.current = next
+        return next
+      })
       setStatus((prev) => (prev === 'booting' ? 'locked' : prev))
     }
     meFn()
@@ -304,6 +423,9 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     settleSaveWaiters(new Error('Vault is locked'))
     pendingRef.current = null
     conflictRef.current = null
+    identityGenerationRef.current += 1
+    identityRef.current = null
+    identityLoadRef.current = null
     wipe(secretsRef.current)
     secretsRef.current = null
     dataRef.current = null
@@ -742,6 +864,14 @@ export function VaultProvider({ children }: { children: ReactNode }) {
           // preferable to resurrecting a permanently deleted item.
         }
       }
+
+      try {
+        await deleteRecipientSharesForEntryFn({ data: { entryId } })
+      } catch {
+        // The item is already gone. Surface the residual share window instead
+        // of pretending the deletion was fully clean.
+        setError(ERROR_MESSAGES.SHARE_CLEANUP_FAILED ?? 'Active shares could not be revoked.')
+      }
     },
     [mutateAndWait],
   )
@@ -749,6 +879,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const finishUnlock = useCallback(
     async (masterKey: Uint8Array, kdf: KdfConfig, userHandle: string) => {
       const vaultKey = deriveVaultKey(masterKey)
+      const normalizedHandle = userHandle.trim().toLowerCase()
       try {
         const remote = await pullVaultFn()
         if (!remote) throw new Error('VAULT_MISSING')
@@ -764,6 +895,9 @@ export function VaultProvider({ children }: { children: ReactNode }) {
           vaultKey,
         )
 
+        identityGenerationRef.current += 1
+        identityRef.current = null
+        identityLoadRef.current = null
         wipe(secretsRef.current)
         secretsRef.current = { masterKey, vaultKey }
         kdfRef.current = kdf
@@ -773,17 +907,21 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         versionRef.current = remote.version
         setData(decrypted)
         setConflict(null)
-        setHandle(userHandle.trim().toLowerCase())
+        handleRef.current = normalizedHandle
+        setHandle(normalizedHandle)
         setStatus('unlocked')
         setSync('saved')
         setLastSyncedAt(remote.updatedAt)
+        void loadIdentity(normalizedHandle, vaultKey).catch(() => {
+          // Sharing is optional for unlocking. The next share action retries.
+        })
       } catch (caught) {
         masterKey.fill(0)
         vaultKey.fill(0)
         throw caught
       }
     },
-    [],
+    [loadIdentity],
   )
 
   const register = useCallback(async (userHandle: string, password: string) => {
@@ -806,6 +944,9 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       },
     })
 
+    identityGenerationRef.current += 1
+    identityRef.current = null
+    identityLoadRef.current = null
     secretsRef.current = { masterKey, vaultKey }
     kdfRef.current = kdf
     versionRef.current = result.version
@@ -814,11 +955,15 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     conflictRef.current = null
     setData(payload)
     setConflict(null)
+    handleRef.current = result.handle
     setHandle(result.handle)
     setStatus('unlocked')
     setSync('saved')
     setLastSyncedAt(Date.now())
-  }, [clearPendingPasskey])
+    void loadIdentity(result.handle, vaultKey).catch(() => {
+      // The account exists even if identity setup is delayed. Retry on demand.
+    })
+  }, [clearPendingPasskey, loadIdentity])
 
   const unlock = useCallback(
     async (userHandle: string, password: string) => {
@@ -906,6 +1051,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const signOut = useCallback(async () => {
     lock()
     await logoutFn()
+    handleRef.current = null
     setHandle(null)
   }, [lock])
 
@@ -914,14 +1060,22 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     const kdf = kdfRef.current
     if (!secrets || !kdf || !dataRef.current) throw new Error('Vault is locked')
 
-    // Prove we still know the current password before re-keying.
+    // Prove we still know the current password before re-keying. The same
+    // proof is sent to rotateFn, which verifies it again before changing the
+    // verifier so a stolen session cannot rotate the account.
     const checkKey = deriveAuthKey(await deriveMasterKey(current, kdf))
-    if (!handle) throw new Error('Not signed in')
+    let currentAuthHash: string
     try {
-      await verifyAuthFn({ data: { handle, authHash: authProof(checkKey) } })
+      currentAuthHash = authProof(checkKey)
     } finally {
       checkKey.fill(0)
     }
+    if (!handle) throw new Error('Not signed in')
+    await verifyAuthFn({ data: { handle, authHash: currentAuthHash } })
+
+    // The identity private key is sealed under the vault key, so rotation must
+    // re-wrap it in the same atomic server update or received shares break.
+    const identity = await ensureIdentity()
 
     // Read the latest snapshot after the awaits so an attachment or edit that
     // landed during verification is included in the re-encrypted vault.
@@ -932,24 +1086,38 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     const nextMaster = await deriveMasterKey(next, nextKdf)
     const nextAuth = deriveAuthKey(nextMaster)
     const nextVaultKey = deriveVaultKey(nextMaster)
-    const sealed = sealVault(payload, nextVaultKey, nextKdf)
+    try {
+      const sealed = sealVault(payload, nextVaultKey, nextKdf)
+      const sealedIdentity = await sealIdentityPrivateKey(identity, nextVaultKey, handle)
+      const result = await rotateFn({
+        data: {
+          currentAuthHash,
+          kdf: nextKdf,
+          authHash: authProof(nextAuth),
+          ciphertext: sealed.ciphertext,
+          nonce: sealed.nonce,
+          identity: {
+            publicKey: identity.publicKey,
+            ciphertext: sealedIdentity.ciphertext,
+            nonce: sealedIdentity.nonce,
+          },
+        },
+      })
 
-    const result = await rotateFn({
-      data: {
-        kdf: nextKdf,
-        authHash: authProof(nextAuth),
-        ciphertext: sealed.ciphertext,
-        nonce: sealed.nonce,
-      },
-    })
-
-    wipe(secretsRef.current)
-    secretsRef.current = { masterKey: nextMaster, vaultKey: nextVaultKey }
-    kdfRef.current = nextKdf
-    versionRef.current = result.version
-    setSync('saved')
-    setLastSyncedAt(result.updatedAt)
-  }, [handle])
+      wipe(secretsRef.current)
+      secretsRef.current = { masterKey: nextMaster, vaultKey: nextVaultKey }
+      kdfRef.current = nextKdf
+      versionRef.current = result.version
+      setSync('saved')
+      setLastSyncedAt(result.updatedAt)
+    } catch (caught) {
+      nextMaster.fill(0)
+      nextVaultKey.fill(0)
+      throw caught
+    } finally {
+      nextAuth.fill(0)
+    }
+  }, [ensureIdentity, handle])
 
   const exportBackup = useCallback((): EncryptedVault | null => {
     const secrets = secretsRef.current
@@ -1132,6 +1300,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     addAttachment,
     removeAttachment,
     downloadAttachment,
+    ensureIdentity,
     deleteEntryPermanently,
     changeMasterPassword,
     exportBackup,

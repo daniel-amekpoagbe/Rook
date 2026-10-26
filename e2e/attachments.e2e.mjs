@@ -99,7 +99,7 @@ try {
   log('editing the item preserved its attachments')
 
   await page.getByRole('button', { name: 'Share', exact: true }).click()
-  await page.waitForSelector('text=Attachments are not included in shared links.', { timeout: 10000 })
+  await page.waitForSelector('text=Attachments are not included.', { timeout: 10000 })
   await page.keyboard.press('Escape')
   await page.waitForTimeout(300)
   log('share dialog warns that attachments stay private')

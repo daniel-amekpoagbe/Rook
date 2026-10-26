@@ -73,7 +73,10 @@ server can still see attachment count, approximate size, and which item a blob b
 users(id, handle, kdf, auth_hash, created_at)     -- kdf = {algorithm,t,m,p,salt} (public)
 vaults(user_id, ciphertext, nonce, version, updated_at)
 attachments(id, user_id, entry_id, ciphertext, nonce, size, created_at)
-shares(id, user_id, entry_id, ciphertext, nonce, expires_at, created_at)
+shares(id, user_id, entry_id, ciphertext, nonce, expires_at, created_at)  -- legacy bearer links, read-only
+user_identities(user_id, public_key, ciphertext, nonce, created_at, updated_at)
+recipient_shares(id, owner_id, recipient_id, entry_id, ciphertext, nonce,
+                 ephemeral_public_key, wrap_nonce, wrapped_key, created_at, expires_at)
 sessions(token_hash, user_id, expires_at)         -- only SHA-256 of the cookie token
 login_attempts(bucket, failures, reset_at)        -- 8 failures / 15 min, per handle
 passkeys(id, user_id, credential_id, public_key, counter, transports, device_type, backed_up, aaguid, name, created_at, last_used_at)
@@ -81,9 +84,23 @@ webauthn_challenges(id, user_id, kind, challenge, expires_at)  -- single-use, 5-
 passkey_recovery(user_id, code_hash, created_at)  -- only SHA-256 of the recovery code
 ```
 
-A share row holds an opaque entry id, ciphertext, a nonce, and timestamps. The 32-byte key
-that decrypts it lives only in the recipient URL fragment (`/share/{id}#{key}`), so the server
-never receives it. Expired rows are removed lazily on share reads and writes.
+`shares` is the legacy bearer-link table. New links are no longer created, but rows written
+before this release stay readable until their original three-day expiry. A legacy row holds
+an opaque entry id, ciphertext, a nonce, and timestamps; the 32-byte key that decrypts it
+lives only in the recipient URL fragment (`/share/{id}#{key}`).
+
+`user_identities` holds each account's P-256 ECDH identity. The public key is safe to publish.
+The PKCS8 private key is encrypted with the vault key before it leaves the browser; the server
+stores only that ciphertext and nonce. This is what lets the account receive shares without
+ever sending a private key to the server.
+
+`recipient_shares` holds one row per recipient-bound share: the payload ciphertext
+(XChaCha20-Poly1305 under a random 32-byte share key), an ephemeral P-256 public key, a wrapped
+share key, and the expiry. The share key is wrapped to the recipient's public key with
+ephemeral P-256 ECDH + HKDF-SHA256 + XChaCha20-Poly1305. The envelope AAD binds the share id,
+owner handle, and recipient handle; the payload AAD binds the share id. The server never
+receives the share key or any private key. Expired rows are removed lazily on reads and
+writes.
 
 An attachment row is ciphertext plus the data needed to enforce storage limits. File names,
 types, and per-file keys live inside the encrypted vault; the vault data version is now 5.
@@ -117,7 +134,13 @@ the salt: the Poly1305 tag will not verify.
   hash are stored.
 - Clipboard snooping — copied secrets are cleared after 30 seconds (best effort).
 - Shoulder surfing / unattended laptops — idle auto-lock wipes the in-memory key.
-- Server-side share leaks — a share row is ciphertext only; the URL fragment key is never sent
+- Server-side recipient-share leaks — a share row is ciphertext plus a public-key envelope;
+  the share key and any private key never reach the server, and the encrypted payload carries
+  its own expiry.
+- Forwarded recipient-bound shares — there is no bearer URL. The server returns a share only to
+  the account named as its recipient, and the envelope opens only with that account's private
+  identity key.
+- Legacy bearer links — existing rows are ciphertext only; the URL fragment key is never sent
   to the server, and the encrypted payload carries its own expiry.
 - Attachment leaks — file bytes are encrypted client-side with random per-file keys; names,
   MIME types, and keys stay inside the encrypted vault, and downloads are verified with AEAD.
@@ -131,12 +154,23 @@ the salt: the Poly1305 tag will not verify.
 - **Losing both a registered passkey and its recovery code.** The vault key still needs the
   master password, but the server will not start a session without the second factor. Store
   the recovery code offline.
-- **Anyone holding a share link.** It is a bearer link: until it expires or is revoked, anyone
-  with the full URL can read the shared password. Send it only over a trusted channel.
+- **An actively malicious server that substitutes a recipient public key.** Rook does not
+  verify recipient public keys out-of-band; the server is the key directory. A passive or
+  database-only attacker still cannot read shares, but a server that actively swaps a key
+  could receive a share intended for someone else. This is the key-directory trust boundary
+  of server-mediated sharing; the database-leak threat is still protected.
+- **A lost recipient identity row or a recipient who never unlocked.** The recipient must
+  unlock Rook once to publish a P-256 identity before anyone can share with them. If that
+  identity private key is lost, existing received shares cannot be decrypted.
+- **A recipient who copies a shared password before revocation.** Revoking a recipient removes
+  their future server access; it cannot recall data they already revealed or copied.
+- **Legacy bearer links you already created.** Anyone with the full URL can read one until it
+  expires; new link creation has been removed.
 - Metadata: the server learns your handle, vault size, save timestamps, version count, the
-  opaque entry id and expiry of any active share, and passkey metadata such as credential ids,
-  device type, and last-used timestamps. For attachments it also learns the opaque item id,
-  attachment count, plaintext byte size, and creation time.
+  opaque entry id and expiry of any active share, the owner/recipient relationship, account
+  public keys and sharing readiness, and passkey metadata such as credential ids, device type,
+  and last-used timestamps. For attachments it also learns the opaque item id, attachment count, plaintext
+  byte size, and creation time.
 - **Attachment loss in a backup restore.** Encrypted backups include attachment metadata but
   not file bytes. Keep important files separately; on import, references survive only when the
   encrypted blob still exists for that account.
@@ -162,12 +196,21 @@ Vault
 
 Sharing
 
-- Create a password share link from a login; the recipient does not need a Rook account
-- Links expire after three days, enforced by the server and by the encrypted payload
-- The share key travels in the URL fragment, so the server only stores ciphertext
-- Active links can be listed and revoked; the link key is not stored, so copy it when created
-- Share links contain only the password. Attachments are never included; the share dialog
-  warns when the item has files.
+- Share a login with another Rook account by handle. The recipient needs a Rook account and
+  must unlock it once to publish a P-256 identity public key
+- The owner's browser wraps a random share key to the recipient's public key with ephemeral
+  P-256 ECDH + HKDF-SHA256 + XChaCha20-Poly1305; the server stores only ciphertext and the
+  public-key envelope
+- Shares expire after three days, enforced by the server and by the encrypted payload
+- “Shared with me” decrypts received items in the browser; shared items stay read-only and are
+  not added to the recipient vault
+- Owners can list and revoke each recipient independently; recipients can remove a share from
+  their inbox, which is a self-revoke
+- The share contains the login's title, username, password, and website. Attachments are
+  never included; the share dialog warns when the item has files
+- Existing bearer links remain readable until their original expiry, but new link creation has
+  been removed
+- Limits: 50 active recipient shares per owner, 20 per item
 
 Attachments
 
@@ -184,12 +227,19 @@ Security
 - Argon2id (64 MiB, t=3, p=1) with a per-account random salt
 - XChaCha20-Poly1305, fresh 24-byte nonce on every save
 - KDF header authenticated as AEAD associated data
-- Share links: XChaCha20-Poly1305 with a random 32-byte key in the URL fragment, share id
-  bound as AAD, and a 3-day expiry
+- Recipient-bound shares: payload XChaCha20-Poly1305 under a random 32-byte share key; the
+  share key is wrapped with ephemeral P-256 ECDH + HKDF-SHA256 + XChaCha20-Poly1305; the
+  envelope AAD binds the share id and both handles, and the payload AAD binds the share id
+- Account identity: P-256 ECDH; the PKCS8 private key is sealed with the vault key and stored
+  server-side only as ciphertext; master-password rotation re-wraps it atomically with the
+  vault and auth verifier
+- Legacy bearer links: XChaCha20-Poly1305 with a random 32-byte key in the URL fragment, share
+  id bound as AAD, and a 3-day expiry
 - Attachments: XChaCha20-Poly1305 with a random per-file key; attachment id, item id, name,
   size, and MIME type bound as AAD
 - Master password rotation (fresh salt, re-key, re-encrypt, single atomic server update;
-  attachment file keys are re-wrapped, file blobs are not re-encrypted)
+  attachment file keys and the sharing identity private key are re-wrapped, file blobs are not
+  re-encrypted)
 - WebAuthn passkey second factor for Rook's own sign-in, required once a passkey is registered
 - One-time recovery code for the passkey second factor, shown once and stored only as a hash
 - Idle auto-lock (1/5/15/30/60 min), in-memory key wiping
@@ -263,10 +313,12 @@ npm run test:e2e   # build, start a disposable server, and run every Playwright 
 
 The Playwright suite lives in `e2e/` and runs in CI. It covers register → save → reload
 locks → wrong password rejected → correct password decrypts → generator, import and
-duplicate detection, history/trash, sharing (including long and password-only items,
-revocation, expiry, and mobile), encrypted attachments (ciphertext-only storage, download,
-reload persistence, removal, blob cleanup, and the share warning), two-tab conflict
-merge/keep/use-server, and a WebAuthn passkey flow using Chromium's virtual authenticator.
+duplicate detection, history/trash, sharing (two accounts, ciphertext-only rows, recipient
+inbox, per-recipient revocation, expiry, master-password rotation, legacy-link read
+compatibility, long and password-only items, and mobile), encrypted attachments
+(ciphertext-only storage, download, reload persistence, removal, blob cleanup, and the share
+warning), two-tab conflict merge/keep/use-server, and a WebAuthn passkey flow using Chromium's
+virtual authenticator.
 The passkey flow runs on `localhost` because WebAuthn RP IDs must be domain names; the rest of
 the suite stays on `127.0.0.1`.
 See `e2e/README.md` for running individual flows against an existing server.
@@ -284,20 +336,21 @@ together to the public origin and RP ID.
 src/lib/crypto.ts          Argon2id, HKDF split, auth proof, AEAD helpers
 src/lib/vault.ts           entry schema (zod), seal/open, header AAD, history/trash/tombstones, conflict merge, search/sort
 src/lib/attachments.ts     attachment schema, limits, AAD, per-file keys, binary seal/open
-src/lib/vault-context.tsx  unlock/register/save/conflict/re-key state machine, auto-lock, attachment flows, exports
-src/lib/share.ts           share payload schema, URL-fragment key encoding, seal/open
+src/lib/vault-context.tsx  unlock/register/save/conflict/re-key state machine, auto-lock, identity lifecycle, attachment flows, exports
+src/lib/share.ts           share payload schema, legacy URL-fragment encoding, shared formatting, seal/open
+src/lib/recipient-share.ts P-256 identity keys, encrypted private-key storage, recipient envelopes, share AAD
 src/lib/import.ts          Chrome/1Password/Bitwarden/Rook parsers and duplicate fingerprints
 src/lib/generator.ts       unbiased CSPRNG password generation + entropy
 src/lib/strength.ts        entropy estimator with sequence/repeat/common penalties
 src/lib/totp.ts            base32 + RFC 6238 via WebCrypto
 src/lib/passkeys.ts        passkey metadata type and recovery-code formatting
-src/server/api.ts          server functions (register, login, kdf, pull/push, rotate, share, attachments, passkeys)
-src/server/db.server.ts    node:sqlite schema and queries
+src/server/api.ts          server functions (register, login, kdf, pull/push, rotate, identity, recipient shares, legacy share read, attachments, passkeys)
+src/server/db.server.ts    node:sqlite schema, identity/recipient-share queries, atomic re-key transaction
 src/server/webauthn.server.ts  WebAuthn ceremonies, RP/origin handling, recovery codes
 src/server/session.server.ts  cookie sessions, constant-time compare
-src/components/            lock screen, vault shell, editor, generator, audit, settings, share
+src/components/            lock screen, vault shell, editor, generator, audit, settings, share dialog, received-shares inbox
 src/routes/__root.tsx      document shell; VaultProvider lives above the router
-src/routes/share.$shareId.tsx  public recipient page for an expiring share link
+src/routes/share.$shareId.tsx  legacy public page for an unexpired bearer link
 ```
 
 ### Notes from building it
@@ -326,13 +379,14 @@ src/routes/share.$shareId.tsx  public recipient page for an expiring share link
 
 Done: the vault, the crypto, the item types, TOTP, audit, generator, backups, rotation,
 item history, trash, permanent-delete tombstones, conflict recovery, encrypted attachments,
-expiring password-share links, import from Chrome, 1Password, Bitwarden, and Rook CSV, and a
-WebAuthn passkey second factor for Rook's own sign-in with a one-time recovery code.
+recipient-bound sharing with P-256 envelopes and per-recipient revocation, legacy-link read
+compatibility, import from Chrome, 1Password, Bitwarden, and Rook CSV, and a WebAuthn passkey
+second factor for Rook's own sign-in with a one-time recovery code.
 
 Next, roughly in order of value:
 
-1. **Recipient-bound sharing** — replace bearer links with public-key envelopes per recipient,
-   so a forwarded link cannot be opened by anyone else and access can be revoked per person.
+1. **Out-of-band recipient key verification** — fingerprints or a key-transparency mechanism
+   so an actively malicious server cannot substitute a recipient public key.
 2. **Email breach monitoring** — periodic HIBP checks for account addresses.
 3. **Attachment-aware backups** — optionally include encrypted blobs in a backup archive, with
    an explicit size cost and the same zero-knowledge guarantees.
