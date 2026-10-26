@@ -19,6 +19,26 @@ export function launchBrowser() {
   })
 }
 
+/**
+ * Attach a Chromium virtual authenticator to the page. This is what lets the
+ * passkey flow run headlessly without a real platform authenticator.
+ */
+export async function addVirtualAuthenticator(page) {
+  const client = await page.context().newCDPSession(page)
+  await client.send('WebAuthn.enable')
+  const { authenticatorId } = await client.send('WebAuthn.addVirtualAuthenticator', {
+    options: {
+      protocol: 'ctap2',
+      transport: 'internal',
+      hasResidentKey: true,
+      hasUserVerification: true,
+      isUserVerified: true,
+      automaticPresenceSimulation: true,
+    },
+  })
+  return { client, authenticatorId }
+}
+
 export function assertNoConsoleErrors(errors, ignored = []) {
   const unexpected = errors.filter(
     (error) => !ignored.some((pattern) => pattern.test(error)),

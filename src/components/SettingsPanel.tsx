@@ -1,8 +1,20 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import {
+  browserSupportsWebAuthn,
+  startRegistration,
+  type PublicKeyCredentialCreationOptionsJSON,
+} from '@simplewebauthn/browser'
 import { IMPORT_SOURCE_LABELS, parseImportText, type ImportResult } from '~/lib/import'
+import type { PasskeySummary } from '~/lib/passkeys'
 import { scorePassword } from '~/lib/strength'
 import { friendlyError, useVault } from '~/lib/vault-context'
-import { Icon, Sheet, StrengthMeter, cx } from './ui'
+import {
+  beginPasskeyRegistrationFn,
+  finishPasskeyRegistrationFn,
+  listPasskeysFn,
+  removePasskeyFn,
+} from '~/server/api'
+import { Icon, Sheet, StrengthMeter, cx, useCopyToClipboard } from './ui'
 
 function download(filename: string, content: string, type = 'application/json') {
   const blob = new Blob([content], { type })
@@ -57,10 +69,92 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const [importBusy, setImportBusy] = useState(false)
   const [pendingPlainImport, setPendingPlainImport] = useState<{ fileName: string; result: ImportResult } | null>(null)
   const [plainImportBusy, setPlainImportBusy] = useState(false)
+  const [passkeys, setPasskeys] = useState<PasskeySummary[]>([])
+  const [passkeysLoading, setPasskeysLoading] = useState(false)
+  const [passkeyBusy, setPasskeyBusy] = useState(false)
+  const [passkeyError, setPasskeyError] = useState<string | null>(null)
+  const [recoveryCode, setRecoveryCode] = useState<string | null>(null)
+  const [recoveryAvailable, setRecoveryAvailable] = useState(false)
+  const [removePasskeyId, setRemovePasskeyId] = useState<string | null>(null)
+  const [webauthnSupported, setWebauthnSupported] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
   const plainFileInput = useRef<HTMLInputElement>(null)
+  const { copied, copy } = useCopyToClipboard()
 
   const strength = scorePassword(next)
+
+  useEffect(() => {
+    setWebauthnSupported(browserSupportsWebAuthn())
+    if (!open) return
+
+    let cancelled = false
+    setPasskeysLoading(true)
+    setPasskeyError(null)
+    listPasskeysFn()
+      .then((result) => {
+        if (cancelled) return
+        setPasskeys(result.passkeys)
+        setRecoveryAvailable(result.recoveryAvailable)
+      })
+      .catch((caught) => {
+        if (!cancelled) setPasskeyError(friendlyError(caught))
+      })
+      .finally(() => {
+        if (!cancelled) setPasskeysLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open])
+
+  async function addPasskey() {
+    setPasskeyError(null)
+    setRecoveryCode(null)
+    setPasskeyBusy(true)
+    try {
+      const { challengeId, options } = await beginPasskeyRegistrationFn()
+      const response = await startRegistration({
+        optionsJSON: options as PublicKeyCredentialCreationOptionsJSON,
+      })
+      const result = await finishPasskeyRegistrationFn({ data: { challengeId, response } })
+      setPasskeys((prev) => [result.passkey, ...prev])
+      setRecoveryAvailable(true)
+      if (result.recoveryCode) setRecoveryCode(result.recoveryCode)
+      setMessage({
+        tone: 'ok',
+        text: 'Passkey added. Your master password and passkey are now both required to unlock.',
+      })
+    } catch (caught) {
+      setPasskeyError(friendlyError(caught))
+    } finally {
+      setPasskeyBusy(false)
+    }
+  }
+
+  async function removePasskey() {
+    if (!removePasskeyId) return
+    setPasskeyBusy(true)
+    setPasskeyError(null)
+    try {
+      const result = await removePasskeyFn({ data: { id: removePasskeyId } })
+      setPasskeys((prev) => prev.filter((passkey) => passkey.id !== removePasskeyId))
+      setRemovePasskeyId(null)
+      if (result.remaining === 0) {
+        setRecoveryAvailable(false)
+        setRecoveryCode(null)
+        setMessage({
+          tone: 'ok',
+          text: 'Passkey verification is off. The recovery code was discarded.',
+        })
+      } else {
+        setMessage({ tone: 'ok', text: 'Passkey removed.' })
+      }
+    } catch (caught) {
+      setPasskeyError(friendlyError(caught))
+    } finally {
+      setPasskeyBusy(false)
+    }
+  }
 
   async function rotate() {
     setMessage(null)
@@ -189,6 +283,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     setPendingCsv(false)
     setPendingImport(null)
     setPendingPlainImport(null)
+    setPasskeyError(null)
+    setRemovePasskeyId(null)
     setMessage(null)
     onClose()
   }
@@ -239,6 +335,161 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             </button>
           ))}
         </div>
+      </Section>
+
+      <Section
+        title="Passkeys"
+        description="Require a passkey after your master password. The passkey proves this device to the server; your master password still derives the vault key."
+      >
+        {recoveryCode && (
+          <div className="mb-3 rounded-lg border border-warn/30 bg-warn/5 px-3 py-3">
+            <div className="flex items-start gap-2">
+              <Icon name="alert" size={15} className="mt-0.5 shrink-0 text-warn" />
+              <div className="min-w-0 flex-1">
+                <p className="text-[12px] font-medium text-ink">Save your recovery code</p>
+                <p className="mt-0.5 text-[11px] leading-relaxed text-muted">
+                  It is shown once and cannot be retrieved. If you lose your passkey, this code is the only way to
+                  sign in. Store it offline.
+                </p>
+                <div className="mt-2 flex gap-2">
+                  <input
+                    readOnly
+                    value={recoveryCode}
+                    aria-label="Recovery code"
+                    className="field h-8 min-w-0 flex-1 font-mono text-[11px] tracking-[0.04em]"
+                    onFocus={(event) => event.currentTarget.select()}
+                  />
+                  <button
+                    type="button"
+                    className="btn-secondary h-8 shrink-0 px-2.5 text-[12px]"
+                    onClick={() => void copy(recoveryCode, 'recovery')}
+                  >
+                    <Icon name={copied === 'recovery' ? 'check' : 'copy'} size={13} />
+                    {copied === 'recovery' ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  className="mt-2 text-[11px] text-muted hover:text-ink"
+                  onClick={() => setRecoveryCode(null)}
+                >
+                  I saved it
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {passkeysLoading ? (
+          <p className="text-[11.5px] text-muted">Loading passkeys…</p>
+        ) : passkeys.length === 0 ? (
+          <p className="text-[11.5px] leading-relaxed text-muted">
+            No passkeys yet. Add one to require a second factor after your master password.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {passkeys.map((passkey) => (
+              <div
+                key={passkey.id}
+                className="flex items-center justify-between gap-3 rounded-lg border border-line bg-surface-2 px-3 py-2.5"
+              >
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-line bg-surface text-muted">
+                    <Icon name="fingerprint" size={15} />
+                  </span>
+                  <div className="min-w-0">
+                    <div className="truncate text-[12.5px] font-medium text-ink">{passkey.name}</div>
+                    <div className="text-[10.5px] leading-relaxed text-faint">
+                      Added{' '}
+                      {new Date(passkey.createdAt).toLocaleDateString(undefined, {
+                        month: 'short',
+                        day: 'numeric',
+                        year: 'numeric',
+                      })}
+                      {' · '}
+                      {passkey.lastUsedAt
+                        ? `Last used ${new Date(passkey.lastUsedAt).toLocaleDateString(undefined, {
+                            month: 'short',
+                            day: 'numeric',
+                          })}`
+                        : 'Never used'}
+                      {' · '}
+                      {passkey.backedUp ? 'Synced passkey' : 'Device-bound passkey'}
+                    </div>
+                  </div>
+                </div>
+                {removePasskeyId === passkey.id ? (
+                  <div className="flex shrink-0 gap-1.5">
+                    <button
+                      type="button"
+                      className="btn-secondary h-8 px-2 text-[11.5px]"
+                      onClick={() => setRemovePasskeyId(null)}
+                      disabled={passkeyBusy}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-danger-solid h-8 px-2 text-[11.5px]"
+                      onClick={() => void removePasskey()}
+                      disabled={passkeyBusy}
+                    >
+                      {passkeyBusy ? 'Removing…' : 'Remove'}
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="icon-btn shrink-0"
+                    aria-label={`Remove ${passkey.name}`}
+                    onClick={() => setRemovePasskeyId(passkey.id)}
+                    disabled={passkeyBusy}
+                  >
+                    <Icon name="trash" size={14} />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {removePasskeyId && passkeys.length === 1 && (
+          <p className="mt-2 text-[11px] leading-relaxed text-warn">
+            Removing the last passkey turns off passkey verification and discards your recovery code.
+          </p>
+        )}
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="btn-secondary h-8 px-2.5 text-[12px]"
+            onClick={() => void addPasskey()}
+            disabled={passkeyBusy || passkeysLoading || !webauthnSupported}
+          >
+            <Icon name="fingerprint" size={13} />
+            {passkeyBusy ? 'Waiting for passkey…' : 'Add passkey'}
+          </button>
+          {!webauthnSupported && (
+            <span className="text-[11px] text-faint">This browser does not support passkeys.</span>
+          )}
+        </div>
+
+        {recoveryAvailable && !recoveryCode && passkeys.length > 0 && (
+          <p className="mt-2 text-[11px] leading-relaxed text-faint">
+            A recovery code is on file. It was shown when you added your first passkey.
+          </p>
+        )}
+
+        <p className="mt-2 text-[11px] leading-relaxed text-faint">
+          Passkeys are tied to this origin. Use the same address (for example, localhost or your HTTPS domain) every
+          time. Private keys never leave your authenticator.
+        </p>
+
+        {passkeyError && (
+          <p role="alert" className="mt-2 text-[11px] leading-relaxed text-danger">
+            {passkeyError}
+          </p>
+        )}
       </Section>
 
       <Section title="Change master password" description="Re-derives keys with a fresh salt and re-encrypts the vault.">
@@ -485,6 +736,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           <li className="flex gap-2">
             <Icon name="check" size={13} className="mt-0.5 shrink-0 text-success" />
             Session: httpOnly cookie holding a random token; only its SHA-256 is stored.
+          </li>
+          <li className="flex gap-2">
+            <Icon name="check" size={13} className="mt-0.5 shrink-0 text-success" />
+            Passkeys: server stores public keys and a recovery-code hash; private keys never leave your authenticator.
           </li>
         </ul>
         <div className="mt-2 font-mono text-[10.5px] text-faint">

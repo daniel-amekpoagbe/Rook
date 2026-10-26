@@ -35,12 +35,42 @@ const shareIdSchema = z
 
 const shareCiphertext = z.string().min(16).max(32_000)
 const entryIdSchema = z.string().min(1).max(128)
+const uuidSchema = z
+  .string()
+  .regex(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    'Invalid id',
+  )
 const MAX_ACTIVE_SHARES = 50
 
 async function store() {
   const db = await import('./db.server')
   const session = await import('./session.server')
   return { db, session }
+}
+
+async function passkeys() {
+  return import('./webauthn.server')
+}
+
+async function verifyCredentials(handleInput: string, authHash: string) {
+  const { db, session } = await store()
+  const handle = handleInput.trim().toLowerCase()
+  const now = Date.now()
+  const bucket = `login:${handle}`
+
+  if (db.isRateLimited(bucket, now)) {
+    throw new Error('RATE_LIMITED')
+  }
+
+  const user = db.findUserByHandle(handle)
+  if (!user || !session.constantTimeEqual(user.auth_hash, session.sha256Hex(authHash))) {
+    db.recordFailure(bucket, now, 15 * 60 * 1000)
+    throw new Error('INVALID_CREDENTIALS')
+  }
+
+  db.clearFailures(bucket)
+  return { db, session, user }
 }
 
 /** Constant-time-ish: unknown handles get a stable fake salt so the UI flow is identical. */
@@ -106,24 +136,107 @@ export const loginFn = createServerFn({ method: 'POST' })
     }),
   )
   .handler(async ({ data }) => {
-    const { db, session } = await store()
-    const handle = data.handle.trim().toLowerCase()
-    const now = Date.now()
-    const bucket = `login:${handle}`
+    const { db, session, user } = await verifyCredentials(data.handle, data.authHash)
 
-    if (db.isRateLimited(bucket, now)) {
-      throw new Error('RATE_LIMITED')
+    if (db.countPasskeys(user.id) === 0) {
+      session.startSession(user.id)
+      return { handle: user.handle }
     }
 
-    const user = db.findUserByHandle(handle)
-    if (!user || !session.constantTimeEqual(user.auth_hash, session.sha256Hex(data.authHash))) {
-      db.recordFailure(bucket, now, 15 * 60 * 1000)
-      throw new Error('INVALID_CREDENTIALS')
+    const webAuthn = await passkeys()
+    const challenge = await webAuthn.beginPasskeyLogin(user)
+    return {
+      handle: user.handle,
+      passkeyRequired: true as const,
+      ...challenge,
     }
+  })
 
-    db.clearFailures(bucket)
+/**
+ * Re-authenticate the current session without starting a new one or asking for
+ * a passkey. Used by master-password rotation, where the session already exists.
+ */
+export const verifyAuthFn = createServerFn({ method: 'POST' })
+  .validator(
+    z.object({
+      handle: handleSchema,
+      authHash: z.string().regex(/^[0-9a-f]{64}$/),
+    }),
+  )
+  .handler(async ({ data }) => {
+    const { session } = await store()
+    const current = session.requireUser()
+    if (current.handle !== data.handle) throw new Error('INVALID_CREDENTIALS')
+    const { user } = await verifyCredentials(data.handle, data.authHash)
+    if (user.id !== current.id) throw new Error('INVALID_CREDENTIALS')
+    return { ok: true }
+  })
+
+export const beginPasskeyRegistrationFn = createServerFn({ method: 'POST' }).handler(async () => {
+  const { session } = await store()
+  const user = session.requireUser()
+  const webAuthn = await passkeys()
+  return webAuthn.beginPasskeyRegistration(user)
+})
+
+export const finishPasskeyRegistrationFn = createServerFn({ method: 'POST' })
+  .validator(
+    z.object({
+      challengeId: uuidSchema,
+      response: z.unknown(),
+    }),
+  )
+  .handler(async ({ data }) => {
+    const { session } = await store()
+    const user = session.requireUser()
+    const webAuthn = await passkeys()
+    return webAuthn.finishPasskeyRegistration(user, data.challengeId, data.response)
+  })
+
+export const finishPasskeyLoginFn = createServerFn({ method: 'POST' })
+  .validator(
+    z.object({
+      challengeId: uuidSchema,
+      response: z.unknown(),
+    }),
+  )
+  .handler(async ({ data }) => {
+    const { session } = await store()
+    const webAuthn = await passkeys()
+    const { user } = await webAuthn.finishPasskeyLogin(data.challengeId, data.response)
     session.startSession(user.id)
     return { handle: user.handle }
+  })
+
+export const finishPasskeyRecoveryFn = createServerFn({ method: 'POST' })
+  .validator(
+    z.object({
+      challengeId: uuidSchema,
+      code: z.string().trim().min(1).max(128),
+    }),
+  )
+  .handler(async ({ data }) => {
+    const { session } = await store()
+    const webAuthn = await passkeys()
+    const { user } = await webAuthn.finishPasskeyRecovery(data.challengeId, data.code)
+    session.startSession(user.id)
+    return { handle: user.handle }
+  })
+
+export const listPasskeysFn = createServerFn({ method: 'GET' }).handler(async () => {
+  const { session } = await store()
+  const user = session.requireUser()
+  const webAuthn = await passkeys()
+  return webAuthn.listPasskeys(user)
+})
+
+export const removePasskeyFn = createServerFn({ method: 'POST' })
+  .validator(z.object({ id: uuidSchema }))
+  .handler(async ({ data }) => {
+    const { session } = await store()
+    const user = session.requireUser()
+    const webAuthn = await passkeys()
+    return webAuthn.removePasskey(user, data.id)
   })
 
 export const logoutFn = createServerFn({ method: 'POST' }).handler(async () => {

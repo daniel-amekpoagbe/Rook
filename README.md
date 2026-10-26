@@ -68,11 +68,18 @@ vaults(user_id, ciphertext, nonce, version, updated_at)
 shares(id, user_id, entry_id, ciphertext, nonce, expires_at, created_at)
 sessions(token_hash, user_id, expires_at)         -- only SHA-256 of the cookie token
 login_attempts(bucket, failures, reset_at)        -- 8 failures / 15 min, per handle
+passkeys(id, user_id, credential_id, public_key, counter, transports, device_type, backed_up, aaguid, name, created_at, last_used_at)
+webauthn_challenges(id, user_id, kind, challenge, expires_at)  -- single-use, 5-minute TTL
+passkey_recovery(user_id, code_hash, created_at)  -- only SHA-256 of the recovery code
 ```
 
 A share row holds an opaque entry id, ciphertext, a nonce, and timestamps. The 32-byte key
 that decrypts it lives only in the recipient URL fragment (`/share/{id}#{key}`), so the server
 never receives it. Expired rows are removed lazily on share reads and writes.
+
+Passkey rows hold public keys and counters, never private keys. A recovery code is generated
+when the first passkey is added, shown once, and stored only as a SHA-256 hash. It is a
+fallback for the passkey second factor; it does not recover or decrypt the vault.
 
 The KDF header (algorithm, cost parameters, salt) is public by necessity — the client needs
 it before it can derive anything. But it is **bound into the AEAD as associated data**, so an
@@ -92,6 +99,10 @@ the salt: the Poly1305 tag will not verify.
 - Online password guessing — Argon2id at 64 MiB plus a per-handle rate limit.
 - Username enumeration in the unlock flow — unknown handles return a deterministic fake salt,
   so the client performs the same work and the same round trip.
+- Password-only account takeover when a passkey is registered — the server will not start a
+  session from the master password alone; a passkey or recovery code is also required.
+- Passkey private-key theft from the server — only public keys, counters, and a recovery-code
+  hash are stored.
 - Clipboard snooping — copied secrets are cleared after 30 seconds (best effort).
 - Shoulder surfing / unattended laptops — idle auto-lock wipes the in-memory key.
 - Server-side share leaks — a share row is ciphertext only; the URL fragment key is never sent
@@ -103,10 +114,14 @@ the salt: the Poly1305 tag will not verify.
 - A weak master password. Argon2id makes guessing expensive, not impossible.
 - **Losing the master password.** There is no recovery, no reset link, no escrow. That is the
   price of zero-knowledge, and it is deliberate.
+- **Losing both a registered passkey and its recovery code.** The vault key still needs the
+  master password, but the server will not start a session without the second factor. Store
+  the recovery code offline.
 - **Anyone holding a share link.** It is a bearer link: until it expires or is revoked, anyone
   with the full URL can read the shared password. Send it only over a trusted channel.
-- Metadata: the server learns your handle, vault size, save timestamps, version count, and the
-  opaque entry id and expiry of any active share.
+- Metadata: the server learns your handle, vault size, save timestamps, version count, the
+  opaque entry id and expiry of any active share, and passkey metadata such as credential ids,
+  device type, and last-used timestamps.
 
 ---
 
@@ -140,9 +155,15 @@ Security
 - Share links: XChaCha20-Poly1305 with a random 32-byte key in the URL fragment, share id
   bound as AAD, and a 3-day expiry
 - Master password rotation (fresh salt, re-key, re-encrypt, single atomic server update)
+- WebAuthn passkey second factor for Rook's own sign-in, required once a passkey is registered
+- One-time recovery code for the passkey second factor, shown once and stored only as a hash
 - Idle auto-lock (1/5/15/30/60 min), in-memory key wiping
 - httpOnly session cookie; only its SHA-256 is stored
 - Login rate limiting and deterministic fake salts for unknown handles
+
+Passkeys are a second factor for the Rook server session, not a vault-unlock method. The master
+password still derives the vault key in the browser. Rook cannot act as a passkey provider for
+other websites without a browser extension, which remains out of scope.
 
 Audit
 
@@ -198,7 +219,7 @@ empty and unlocks immediately.
 ### Tests
 
 ```bash
-npm test           # crypto, vault, conflict merge, tombstones, sharing, generator, strength, TOTP, and import parsers
+npm test           # crypto, vault, conflict merge, tombstones, sharing, generator, strength, TOTP, import, and passkey helpers
 npm run typecheck
 npm run test:e2e   # build, start a disposable server, and run every Playwright flow
 ```
@@ -206,8 +227,15 @@ npm run test:e2e   # build, start a disposable server, and run every Playwright 
 The Playwright suite lives in `e2e/` and runs in CI. It covers register → save → reload
 locks → wrong password rejected → correct password decrypts → generator, import and
 duplicate detection, history/trash, sharing (including long and password-only items,
-revocation, expiry, and mobile), and two-tab conflict merge/keep/use-server. See
-`e2e/README.md` for running individual flows against an existing server.
+revocation, expiry, and mobile), two-tab conflict merge/keep/use-server, and a WebAuthn
+passkey flow using Chromium's virtual authenticator. The passkey flow runs on `localhost`
+because WebAuthn RP IDs must be domain names; the rest of the suite stays on `127.0.0.1`.
+See `e2e/README.md` for running individual flows against an existing server.
+
+Passkeys require a secure context: HTTPS in production, or `localhost` during development.
+They are bound to the origin, so a passkey registered at `localhost:3000` will not work at
+`127.0.0.1:3000`. Behind a proxy, set `ROOK_WEBAUTHN_ORIGIN` and `ROOK_WEBAUTHN_RP_ID`
+together to the public origin and RP ID.
 
 ---
 
@@ -222,8 +250,10 @@ src/lib/import.ts          Chrome/1Password/Bitwarden/Rook parsers and duplicate
 src/lib/generator.ts       unbiased CSPRNG password generation + entropy
 src/lib/strength.ts        entropy estimator with sequence/repeat/common penalties
 src/lib/totp.ts            base32 + RFC 6238 via WebCrypto
-src/server/api.ts          server functions (register, login, kdf, pull/push, rotate, share)
+src/lib/passkeys.ts        passkey metadata type and recovery-code formatting
+src/server/api.ts          server functions (register, login, kdf, pull/push, rotate, share, passkeys)
 src/server/db.server.ts    node:sqlite schema and queries
+src/server/webauthn.server.ts  WebAuthn ceremonies, RP/origin handling, recovery codes
 src/server/session.server.ts  cookie sessions, constant-time compare
 src/components/            lock screen, vault shell, editor, generator, audit, settings, share
 src/routes/__root.tsx      document shell; VaultProvider lives above the router
@@ -238,6 +268,11 @@ src/routes/share.$shareId.tsx  public recipient page for an expiring share link
   provider is remounted by router invalidation and would drop the in-memory key mid-session.
 - Saves are immediate and serialized, not debounced. A debounce window is a data-loss window
   if the tab closes, and every mutation is already an explicit user action.
+- WebAuthn is origin-bound. The server derives the RP ID and expected origin from the request,
+  with `ROOK_WEBAUTHN_ORIGIN` / `ROOK_WEBAUTHN_RP_ID` overrides for proxies. `localhost` is a
+  valid RP ID; `127.0.0.1` is not.
+- A passkey prompt needs a user gesture, so the master-password step holds the derived key in
+  memory and waits for an explicit "Use passkey" click instead of prompting automatically.
 
 ---
 
@@ -245,18 +280,20 @@ src/routes/share.$shareId.tsx  public recipient page for an expiring share link
 
 Done: the vault, the crypto, the item types, TOTP, audit, generator, backups, rotation,
 item history, trash, permanent-delete tombstones, conflict recovery, expiring password-share
-links, and import from Chrome, 1Password, Bitwarden, and Rook CSV.
+links, import from Chrome, 1Password, Bitwarden, and Rook CSV, and a WebAuthn passkey second
+factor for Rook's own sign-in with a one-time recovery code.
 
 Next, roughly in order of value:
 
-1. **Passkeys / WebAuthn** — store credentials and act as an authenticator.
-2. **Attachments** — encrypt file blobs separately, same key hierarchy.
-3. **Recipient-bound sharing** — replace bearer links with public-key envelopes per recipient,
+1. **Attachments** — encrypt file blobs separately, same key hierarchy.
+2. **Recipient-bound sharing** — replace bearer links with public-key envelopes per recipient,
    so a forwarded link cannot be opened by anyone else and access can be revoked per person.
-4. **Email breach monitoring** — periodic HIBP checks for account addresses.
+3. **Email breach monitoring** — periodic HIBP checks for account addresses.
 
-Deliberately out of scope for now: a browser extension and autofill. Also out of scope for
-this personal build: team administration, SSO/SCIM, travel mode, and a hosted service.
+Passkeys here authenticate Rook's server session; they do not store credentials for, or act as
+an authenticator for, other websites. That requires a browser extension and remains out of
+scope, along with autofill. Also out of scope for this personal build: team administration,
+SSO/SCIM, travel mode, and a hosted service.
 
 ---
 

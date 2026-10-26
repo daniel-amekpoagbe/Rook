@@ -13,15 +13,34 @@ const artifacts = process.env.E2E_ARTIFACTS ?? join(root, 'e2e', 'artifacts')
 
 await mkdir(artifacts, { recursive: true })
 
+// WebAuthn RP IDs must be domain names. localhost is a secure context and a
+// valid RP ID, while 127.0.0.1 is not. The rest of the suite stays on the
+// loopback address so existing tests do not change origins.
+function passkeyOrigin(value) {
+  try {
+    const url = new URL(value)
+    if (url.hostname === '127.0.0.1' || url.hostname === '[::1]' || url.hostname === '::1') {
+      url.hostname = 'localhost'
+      return url.origin
+    }
+  } catch {
+    // Fall through to the supplied value; the flow will report a clear error.
+  }
+  return value
+}
+
+const passkeyBase = passkeyOrigin(externalBase ?? `http://127.0.0.1:${port}`)
+
 const scripts = [
-  'e2e/vault.e2e.mjs',
-  'e2e/import.e2e.mjs',
-  'e2e/history-trash.e2e.mjs',
-  'e2e/share.e2e.mjs',
-  'e2e/share-edge.e2e.mjs',
-  'e2e/share-mobile.e2e.mjs',
-  'e2e/conflict-recovery.e2e.mjs',
-  'e2e/conflict-choices.e2e.mjs',
+  { file: 'e2e/vault.e2e.mjs' },
+  { file: 'e2e/passkey.e2e.mjs', env: { BASE_URL: passkeyBase } },
+  { file: 'e2e/import.e2e.mjs' },
+  { file: 'e2e/history-trash.e2e.mjs' },
+  { file: 'e2e/share.e2e.mjs' },
+  { file: 'e2e/share-edge.e2e.mjs' },
+  { file: 'e2e/share-mobile.e2e.mjs' },
+  { file: 'e2e/conflict-recovery.e2e.mjs' },
+  { file: 'e2e/conflict-choices.e2e.mjs' },
 ]
 
 let server = null
@@ -40,7 +59,7 @@ async function waitForServer() {
   throw new Error(`server did not become ready at ${base}`)
 }
 
-function runScript(file) {
+function runScript(file, overrides = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [file], {
       cwd: root,
@@ -50,6 +69,7 @@ function runScript(file) {
         E2E_ARTIFACTS: artifacts,
         ...(dbPath ? { DB_PATH: dbPath } : {}),
         ...(dataDir ? { ROOK_DATA_DIR: dataDir } : {}),
+        ...overrides,
       },
       stdio: 'inherit',
     })
@@ -83,8 +103,8 @@ try {
 
   console.log(`\nRunning E2E against ${base}\n`)
   for (const script of scripts) {
-    console.log(`\n▶ ${script}`)
-    await runScript(script)
+    console.log(`\n▶ ${script.file}`)
+    await runScript(script.file, script.env)
   }
   console.log('\nE2E_SUITE=PASS')
 } catch (error) {
