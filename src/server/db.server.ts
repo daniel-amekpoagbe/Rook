@@ -57,6 +57,29 @@ export function getDb(): DatabaseSync {
       created_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS user_identities (
+      user_id    TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      public_key TEXT NOT NULL,
+      ciphertext TEXT NOT NULL,
+      nonce      TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS recipient_shares (
+      id                   TEXT PRIMARY KEY,
+      owner_id             TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      recipient_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      entry_id             TEXT NOT NULL,
+      ciphertext           TEXT NOT NULL,
+      nonce                TEXT NOT NULL,
+      ephemeral_public_key TEXT NOT NULL,
+      wrap_nonce           TEXT NOT NULL,
+      wrapped_key          TEXT NOT NULL,
+      created_at           INTEGER NOT NULL,
+      expires_at           INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS attachments (
       id         TEXT PRIMARY KEY,
       user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -101,6 +124,14 @@ export function getDb(): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_attachments_user_entry ON attachments(user_id, entry_id);
     CREATE INDEX IF NOT EXISTS idx_shares_user_entry ON shares(user_id, entry_id);
     CREATE INDEX IF NOT EXISTS idx_shares_expires ON shares(expires_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_recipient_shares_unique
+      ON recipient_shares(owner_id, recipient_id, entry_id);
+    CREATE INDEX IF NOT EXISTS idx_recipient_shares_owner_entry
+      ON recipient_shares(owner_id, entry_id);
+    CREATE INDEX IF NOT EXISTS idx_recipient_shares_recipient
+      ON recipient_shares(recipient_id, expires_at);
+    CREATE INDEX IF NOT EXISTS idx_recipient_shares_expires
+      ON recipient_shares(expires_at);
     CREATE INDEX IF NOT EXISTS idx_passkeys_user ON passkeys(user_id);
     CREATE INDEX IF NOT EXISTS idx_webauthn_challenges_user ON webauthn_challenges(user_id, kind);
     CREATE INDEX IF NOT EXISTS idx_webauthn_challenges_expires ON webauthn_challenges(expires_at);
@@ -158,6 +189,107 @@ export function upsertVault(row: VaultRow): void {
          updated_at = excluded.updated_at`,
     )
     .run(row.user_id, row.ciphertext, row.nonce, row.version, row.updated_at)
+}
+
+export interface IdentityRow {
+  user_id: string
+  public_key: string
+  ciphertext: string
+  nonce: string
+  created_at: number
+  updated_at: number
+}
+
+export function getIdentity(userId: string): IdentityRow | undefined {
+  return getDb()
+    .prepare('SELECT * FROM user_identities WHERE user_id = ?')
+    .get(userId) as IdentityRow | undefined
+}
+
+/** First writer wins, so two tabs cannot create conflicting account identities. */
+export function createIdentity(row: IdentityRow): boolean {
+  const result = getDb()
+    .prepare(
+      `INSERT OR IGNORE INTO user_identities
+        (user_id, public_key, ciphertext, nonce, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      row.user_id,
+      row.public_key,
+      row.ciphertext,
+      row.nonce,
+      row.created_at,
+      row.updated_at,
+    )
+  return Number(result.changes) > 0
+}
+
+export interface RotateUserKeysInput {
+  userId: string
+  kdf: string
+  authHash: string
+  vault: VaultRow
+  identity?: {
+    publicKey: string
+    ciphertext: string
+    nonce: string
+    updatedAt: number
+  }
+}
+
+/**
+ * Master-password rotation must move the vault, auth verifier, and identity
+ * private-key envelope together. A partial update would strand either the
+ * vault or every received share behind the old key.
+ */
+export function rotateUserKeys(input: RotateUserKeysInput): void {
+  const db = getDb()
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    db.prepare('UPDATE users SET kdf = ?, auth_hash = ? WHERE id = ?').run(
+      input.kdf,
+      input.authHash,
+      input.userId,
+    )
+    db.prepare(
+      `INSERT INTO vaults (user_id, ciphertext, nonce, version, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(user_id) DO UPDATE SET
+         ciphertext = excluded.ciphertext,
+         nonce = excluded.nonce,
+         version = excluded.version,
+         updated_at = excluded.updated_at`,
+    ).run(
+      input.vault.user_id,
+      input.vault.ciphertext,
+      input.vault.nonce,
+      input.vault.version,
+      input.vault.updated_at,
+    )
+
+    if (input.identity) {
+      const result = db
+        .prepare(
+          `UPDATE user_identities
+           SET ciphertext = ?, nonce = ?, updated_at = ?
+           WHERE user_id = ? AND public_key = ?`,
+        )
+        .run(
+          input.identity.ciphertext,
+          input.identity.nonce,
+          input.identity.updatedAt,
+          input.userId,
+          input.identity.publicKey,
+        )
+      if (Number(result.changes) !== 1) throw new Error('IDENTITY_CHANGED')
+    }
+
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
 }
 
 export function createSession(tokenHash: string, userId: string, expiresAt: number, now: number): void {
@@ -222,57 +354,182 @@ export interface ShareRow {
   created_at: number
 }
 
-export interface ShareSummaryRow {
-  id: string
-  expiresAt: number
-  createdAt: number
-}
-
-export function createShare(row: ShareRow): void {
-  getDb()
-    .prepare(
-      `INSERT INTO shares (id, user_id, entry_id, ciphertext, nonce, expires_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      row.id,
-      row.user_id,
-      row.entry_id,
-      row.ciphertext,
-      row.nonce,
-      row.expires_at,
-      row.created_at,
-    )
-}
-
 export function getShare(id: string): ShareRow | undefined {
   return getDb().prepare('SELECT * FROM shares WHERE id = ?').get(id) as ShareRow | undefined
 }
 
-export function countActiveShares(userId: string, now: number): number {
+/** Legacy bearer links remain readable until their original expiry. */
+export function deleteExpiredShares(now: number): void {
+  getDb().prepare('DELETE FROM shares WHERE expires_at <= ?').run(now)
+}
+
+export interface RecipientShareRow {
+  id: string
+  owner_id: string
+  recipient_id: string
+  entry_id: string
+  ciphertext: string
+  nonce: string
+  ephemeral_public_key: string
+  wrap_nonce: string
+  wrapped_key: string
+  created_at: number
+  expires_at: number
+}
+
+export interface SentRecipientShareRow {
+  id: string
+  recipientId: string
+  recipientHandle: string
+  expiresAt: number
+  createdAt: number
+}
+
+export interface ReceivedRecipientShareRow {
+  id: string
+  entryId: string
+  ownerHandle: string
+  ciphertext: string
+  nonce: string
+  ephemeralPublicKey: string
+  wrapNonce: string
+  wrappedKey: string
+  expiresAt: number
+  createdAt: number
+}
+
+export function createRecipientShare(row: RecipientShareRow): void {
+  getDb()
+    .prepare(
+      `INSERT INTO recipient_shares
+        (id, owner_id, recipient_id, entry_id, ciphertext, nonce,
+         ephemeral_public_key, wrap_nonce, wrapped_key, created_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      row.id,
+      row.owner_id,
+      row.recipient_id,
+      row.entry_id,
+      row.ciphertext,
+      row.nonce,
+      row.ephemeral_public_key,
+      row.wrap_nonce,
+      row.wrapped_key,
+      row.created_at,
+      row.expires_at,
+    )
+}
+
+export function countActiveRecipientShares(ownerId: string, now: number): number {
   const row = getDb()
-    .prepare('SELECT COUNT(*) AS count FROM shares WHERE user_id = ? AND expires_at > ?')
-    .get(userId, now) as { count: number } | undefined
+    .prepare(
+      'SELECT COUNT(*) AS count FROM recipient_shares WHERE owner_id = ? AND expires_at > ?',
+    )
+    .get(ownerId, now) as { count: number } | undefined
   return row?.count ?? 0
 }
 
-export function listShares(userId: string, entryId: string, now: number): ShareSummaryRow[] {
+export function countActiveRecipientSharesForEntry(
+  ownerId: string,
+  entryId: string,
+  now: number,
+): number {
+  const row = getDb()
+    .prepare(
+      `SELECT COUNT(*) AS count FROM recipient_shares
+       WHERE owner_id = ? AND entry_id = ? AND expires_at > ?`,
+    )
+    .get(ownerId, entryId, now) as { count: number } | undefined
+  return row?.count ?? 0
+}
+
+export function hasActiveRecipientShare(
+  ownerId: string,
+  recipientId: string,
+  entryId: string,
+  now: number,
+): boolean {
+  const row = getDb()
+    .prepare(
+      `SELECT 1 AS found FROM recipient_shares
+       WHERE owner_id = ? AND recipient_id = ? AND entry_id = ? AND expires_at > ?
+       LIMIT 1`,
+    )
+    .get(ownerId, recipientId, entryId, now) as { found: number } | undefined
+  return Boolean(row)
+}
+
+export function listSentRecipientShares(
+  ownerId: string,
+  entryId: string,
+  now: number,
+): SentRecipientShareRow[] {
   return getDb()
     .prepare(
-      `SELECT id, expires_at AS expiresAt, created_at AS createdAt
-       FROM shares
-       WHERE user_id = ? AND entry_id = ? AND expires_at > ?
-       ORDER BY created_at DESC`,
+      `SELECT rs.id,
+              rs.recipient_id AS recipientId,
+              recipient.handle AS recipientHandle,
+              rs.expires_at AS expiresAt,
+              rs.created_at AS createdAt
+       FROM recipient_shares rs
+       JOIN users recipient ON recipient.id = rs.recipient_id
+       WHERE rs.owner_id = ? AND rs.entry_id = ? AND rs.expires_at > ?
+       ORDER BY rs.created_at DESC`,
     )
-    .all(userId, entryId, now) as unknown as ShareSummaryRow[]
+    .all(ownerId, entryId, now) as unknown as SentRecipientShareRow[]
 }
 
-export function deleteShareForUser(id: string, userId: string): void {
-  getDb().prepare('DELETE FROM shares WHERE id = ? AND user_id = ?').run(id, userId)
+export function listReceivedRecipientShares(
+  recipientId: string,
+  now: number,
+): ReceivedRecipientShareRow[] {
+  return getDb()
+    .prepare(
+      `SELECT rs.id,
+              rs.entry_id AS entryId,
+              owner.handle AS ownerHandle,
+              rs.ciphertext,
+              rs.nonce,
+              rs.ephemeral_public_key AS ephemeralPublicKey,
+              rs.wrap_nonce AS wrapNonce,
+              rs.wrapped_key AS wrappedKey,
+              rs.expires_at AS expiresAt,
+              rs.created_at AS createdAt
+       FROM recipient_shares rs
+       JOIN users owner ON owner.id = rs.owner_id
+       WHERE rs.recipient_id = ? AND rs.expires_at > ?
+       ORDER BY rs.created_at DESC`,
+    )
+    .all(recipientId, now) as unknown as ReceivedRecipientShareRow[]
 }
 
-export function deleteExpiredShares(now: number): void {
-  getDb().prepare('DELETE FROM shares WHERE expires_at <= ?').run(now)
+export function deleteRecipientShareForOwner(id: string, ownerId: string): boolean {
+  const result = getDb()
+    .prepare('DELETE FROM recipient_shares WHERE id = ? AND owner_id = ?')
+    .run(id, ownerId)
+  return Number(result.changes) > 0
+}
+
+export function deleteRecipientShareForRecipient(
+  id: string,
+  recipientId: string,
+): boolean {
+  const result = getDb()
+    .prepare('DELETE FROM recipient_shares WHERE id = ? AND recipient_id = ?')
+    .run(id, recipientId)
+  return Number(result.changes) > 0
+}
+
+export function deleteRecipientSharesForEntry(ownerId: string, entryId: string): number {
+  const result = getDb()
+    .prepare('DELETE FROM recipient_shares WHERE owner_id = ? AND entry_id = ?')
+    .run(ownerId, entryId)
+  return Number(result.changes)
+}
+
+export function deleteExpiredRecipientShares(now: number): void {
+  getDb().prepare('DELETE FROM recipient_shares WHERE expires_at <= ?').run(now)
 }
 
 export interface AttachmentRow {

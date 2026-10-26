@@ -2,15 +2,15 @@ import { z } from 'zod'
 import { randomBytes } from '@noble/hashes/utils.js'
 import { decrypt, encrypt, fromB64, toB64, type SealedBlob } from './crypto'
 
-/** Shared links live for exactly three days. */
+/** Shares live for exactly three days. */
 export const SHARE_TTL_MS = 3 * 24 * 60 * 60 * 1000
 export const SHARE_FORMAT_VERSION = 1
 export const SHARE_KEY_BYTES = 32
 
 /**
- * The URL fragment carries the only key that can open a share. It is never
- * sent to the server, so a database leak exposes ciphertext without a way to
- * decrypt it.
+ * The share payload is the same for recipient-bound shares and legacy bearer
+ * links. Legacy links carried their key in the URL fragment; recipient shares
+ * carry a wrapped share key in the envelope instead.
  */
 export const sharePayloadSchema = z.object({
   version: z.literal(SHARE_FORMAT_VERSION),
@@ -39,6 +39,30 @@ export function formatShareRemaining(expiresAt: number, now = Date.now()): strin
   if (hours > 0) return `${hours}h ${minutes}m`
   if (minutes > 0) return `${minutes}m`
   return `${seconds}s`
+}
+
+export function formatShareExpiry(expiresAt: number): string {
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'numeric',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+    .format(new Date(expiresAt))
+    .replace(', ', ' at ')
+}
+
+/** Only render http(s) URLs as active links; otherwise show plain text. */
+export function safeShareHref(url: string): string | undefined {
+  const candidate = url.includes('://') ? url : `https://${url}`
+  try {
+    const parsed = new URL(candidate)
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return parsed.toString()
+  } catch {
+    // Fall through: render the URL as plain text instead of an active link.
+  }
+  return undefined
 }
 
 function toBase64Url(bytes: Uint8Array): string {
