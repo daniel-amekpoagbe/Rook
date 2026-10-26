@@ -99,17 +99,25 @@ export interface SealedBlob {
   ciphertext: string
 }
 
-export function encrypt(key: Uint8Array, plaintext: string, aad: string): SealedBlob {
+/** Encrypt arbitrary bytes. Used for attachment blobs as well as text payloads. */
+export function encryptBytes(key: Uint8Array, plaintext: Uint8Array, aad: string): SealedBlob {
   const nonce = randomBytes(NONCE_BYTES)
-  const bytes = new TextEncoder().encode(plaintext)
-  const ciphertext = xchacha20poly1305(key, nonce, new TextEncoder().encode(aad)).encrypt(bytes)
+  const ciphertext = xchacha20poly1305(key, nonce, new TextEncoder().encode(aad)).encrypt(plaintext)
   return { nonce: toB64(nonce), ciphertext: toB64(ciphertext) }
 }
 
 /** Throws on wrong key or tampered ciphertext/AAD. */
-export function decrypt(key: Uint8Array, blob: SealedBlob, aad: string): string {
-  const plaintext = xchacha20poly1305(key, fromB64(blob.nonce), new TextEncoder().encode(aad)).decrypt(
+export function decryptBytes(key: Uint8Array, blob: SealedBlob, aad: string): Uint8Array {
+  return xchacha20poly1305(key, fromB64(blob.nonce), new TextEncoder().encode(aad)).decrypt(
     fromB64(blob.ciphertext),
   )
-  return new TextDecoder().decode(plaintext)
+}
+
+export function encrypt(key: Uint8Array, plaintext: string, aad: string): SealedBlob {
+  return encryptBytes(key, new TextEncoder().encode(plaintext), aad)
+}
+
+/** Throws on wrong key or tampered ciphertext/AAD. */
+export function decrypt(key: Uint8Array, blob: SealedBlob, aad: string): string {
+  return new TextDecoder().decode(decryptBytes(key, blob, aad))
 }

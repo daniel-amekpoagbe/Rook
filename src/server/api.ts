@@ -1,5 +1,11 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
+import {
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENTS_PER_ENTRY,
+  MAX_ATTACHMENTS_PER_USER,
+  MAX_ATTACHMENT_TOTAL_BYTES,
+} from '~/lib/attachments'
 import type { KdfConfig } from '~/lib/crypto'
 import { SHARE_TTL_MS } from '~/lib/share'
 
@@ -34,6 +40,9 @@ const shareIdSchema = z
   )
 
 const shareCiphertext = z.string().min(16).max(32_000)
+/** 10 MiB plaintext plus the 16-byte AEAD tag, base64-encoded. */
+const attachmentCiphertext = z.string().min(16).max(14_100_000)
+const attachmentSize = z.number().int().min(0).max(MAX_ATTACHMENT_BYTES)
 const entryIdSchema = z.string().min(1).max(128)
 const uuidSchema = z
   .string()
@@ -385,3 +394,98 @@ export const revokeShareFn = createServerFn({ method: 'POST' })
     db.deleteShareForUser(data.id, user.id)
     return { ok: true }
   })
+
+/**
+ * Attachment blobs are opaque ciphertext. The server enforces per-entry and
+ * per-account storage limits, but never learns file names, types, or keys.
+ */
+export const uploadAttachmentFn = createServerFn({ method: 'POST' })
+  .validator(
+    z.object({
+      id: uuidSchema,
+      entryId: entryIdSchema,
+      ciphertext: attachmentCiphertext,
+      nonce: vaultPayload.nonce,
+      size: attachmentSize,
+    }),
+  )
+  .handler(async ({ data }) => {
+    const { db, session } = await store()
+    const user = session.requireUser()
+    if (db.getAttachmentForUser(data.id, user.id)) throw new Error('ATTACHMENT_EXISTS')
+    // XChaCha20-Poly1305 adds a 16-byte tag. Reject a body that cannot match
+    // the declared plaintext size so a client cannot bypass the storage quota.
+    if (Buffer.from(data.ciphertext, 'base64').byteLength !== data.size + 16) {
+      throw new Error('ATTACHMENT_INVALID')
+    }
+    if (db.countAttachmentsForEntry(user.id, data.entryId) >= MAX_ATTACHMENTS_PER_ENTRY) {
+      throw new Error('ATTACHMENT_LIMIT')
+    }
+    if (db.countAttachmentsForUser(user.id) >= MAX_ATTACHMENTS_PER_USER) {
+      throw new Error('ATTACHMENT_LIMIT')
+    }
+    if (db.sumAttachmentBytesForUser(user.id) + data.size > MAX_ATTACHMENT_TOTAL_BYTES) {
+      throw new Error('ATTACHMENT_QUOTA')
+    }
+
+    const now = Date.now()
+    db.createAttachment({
+      id: data.id,
+      user_id: user.id,
+      entry_id: data.entryId,
+      ciphertext: data.ciphertext,
+      nonce: data.nonce,
+      size: data.size,
+      created_at: now,
+    })
+    return { id: data.id, size: data.size, createdAt: now }
+  })
+
+/** POST avoids browser caches retaining a deleted attachment's ciphertext. */
+export const getAttachmentFn = createServerFn({ method: 'POST' })
+  .validator(z.object({ id: uuidSchema }))
+  .handler(async ({ data }) => {
+    const { db, session } = await store()
+    const user = session.requireUser()
+    const attachment = db.getAttachmentForUser(data.id, user.id)
+    if (!attachment) throw new Error('ATTACHMENT_NOT_FOUND')
+    return {
+      id: attachment.id,
+      ciphertext: attachment.ciphertext,
+      nonce: attachment.nonce,
+      size: attachment.size,
+      createdAt: attachment.created_at,
+    }
+  })
+
+export const deleteAttachmentFn = createServerFn({ method: 'POST' })
+  .validator(z.object({ id: uuidSchema }))
+  .handler(async ({ data }) => {
+    const { db, session } = await store()
+    const user = session.requireUser()
+    db.deleteAttachmentForUser(data.id, user.id)
+    return { ok: true }
+  })
+
+export const deleteAttachmentsForEntryFn = createServerFn({ method: 'POST' })
+  .validator(z.object({ entryId: entryIdSchema }))
+  .handler(async ({ data }) => {
+    const { db, session } = await store()
+    const user = session.requireUser()
+    const deleted = db.deleteAttachmentsForEntry(user.id, data.entryId)
+    return { deleted }
+  })
+
+/** Used to filter imported backup references and to audit storage usage. */
+export const listAttachmentsFn = createServerFn({ method: 'GET' }).handler(async () => {
+  const { db, session } = await store()
+  const user = session.requireUser()
+  return {
+    attachments: db.listAttachmentsForUser(user.id).map((attachment) => ({
+      id: attachment.id,
+      entryId: attachment.entry_id,
+      size: attachment.size,
+      createdAt: attachment.created_at,
+    })),
+  }
+})

@@ -6,7 +6,8 @@ chess rook: a quiet, watchful castle for the things that unlock your day.
 
 - **Frontend:** TanStack Start (React 19, file-based router, Vite 8, Tailwind v4, Inter + JetBrains Mono, Lucide icons via `react-icons`)
 - **Backend:** Node.js server functions + `node:sqlite` (no native dependencies)
-- **Crypto:** Argon2id → HKDF-SHA256 → XChaCha20-Poly1305, all in the browser
+- **Crypto:** Argon2id → HKDF-SHA256 → XChaCha20-Poly1305, all in the browser, with
+  separate per-file keys for attachments
 
 ---
 
@@ -58,6 +59,12 @@ compatible.
 does not let an attacker log in (they would need a preimage of SHA-256) or decrypt anything
 (they would need `vaultKey`).
 
+Attachments follow the same rule. Each file is encrypted in the browser with a fresh random
+32-byte key, and that key is stored only inside the encrypted vault metadata. The server gets
+a separate ciphertext row with a nonce, the plaintext byte count, and the opaque item id. It
+never receives the file name, MIME type, file key, or plaintext. The trade-off is that the
+server can still see attachment count, approximate size, and which item a blob belongs to.
+
 ---
 
 ## 2. What is actually stored
@@ -65,6 +72,7 @@ does not let an attacker log in (they would need a preimage of SHA-256) or decry
 ```sql
 users(id, handle, kdf, auth_hash, created_at)     -- kdf = {algorithm,t,m,p,salt} (public)
 vaults(user_id, ciphertext, nonce, version, updated_at)
+attachments(id, user_id, entry_id, ciphertext, nonce, size, created_at)
 shares(id, user_id, entry_id, ciphertext, nonce, expires_at, created_at)
 sessions(token_hash, user_id, expires_at)         -- only SHA-256 of the cookie token
 login_attempts(bucket, failures, reset_at)        -- 8 failures / 15 min, per handle
@@ -76,6 +84,10 @@ passkey_recovery(user_id, code_hash, created_at)  -- only SHA-256 of the recover
 A share row holds an opaque entry id, ciphertext, a nonce, and timestamps. The 32-byte key
 that decrypts it lives only in the recipient URL fragment (`/share/{id}#{key}`), so the server
 never receives it. Expired rows are removed lazily on share reads and writes.
+
+An attachment row is ciphertext plus the data needed to enforce storage limits. File names,
+types, and per-file keys live inside the encrypted vault; the vault data version is now 5.
+Versions 2–4 remain readable and gain an empty attachment list when opened.
 
 Passkey rows hold public keys and counters, never private keys. A recovery code is generated
 when the first passkey is added, shown once, and stored only as a SHA-256 hash. It is a
@@ -107,6 +119,8 @@ the salt: the Poly1305 tag will not verify.
 - Shoulder surfing / unattended laptops — idle auto-lock wipes the in-memory key.
 - Server-side share leaks — a share row is ciphertext only; the URL fragment key is never sent
   to the server, and the encrypted payload carries its own expiry.
+- Attachment leaks — file bytes are encrypted client-side with random per-file keys; names,
+  MIME types, and keys stay inside the encrypted vault, and downloads are verified with AEAD.
 
 **Does not protect against**
 
@@ -121,7 +135,11 @@ the salt: the Poly1305 tag will not verify.
   with the full URL can read the shared password. Send it only over a trusted channel.
 - Metadata: the server learns your handle, vault size, save timestamps, version count, the
   opaque entry id and expiry of any active share, and passkey metadata such as credential ids,
-  device type, and last-used timestamps.
+  device type, and last-used timestamps. For attachments it also learns the opaque item id,
+  attachment count, plaintext byte size, and creation time.
+- **Attachment loss in a backup restore.** Encrypted backups include attachment metadata but
+  not file bytes. Keep important files separately; on import, references survive only when the
+  encrypted blob still exists for that account.
 
 ---
 
@@ -132,10 +150,12 @@ Vault
 - Item types: login, secure note, card, identity
 - Create, edit, move to trash, restore, favorite, tags
 - Item history: the previous 20 versions stay encrypted, and any version can be restored
-- Trash: deleted items can be restored or permanently removed with their history
+- Encrypted file attachments on any item: add, download, and remove files without exposing
+  their bytes, names, or keys to the server
+- Trash: deleted items can be restored or permanently removed with their history and files
 - Permanent-delete tombstones: a deletion survives conflict merges, so a stale vault copy
   cannot silently resurrect the item
-- Full-text search across title, username, URL, notes, tags
+- Full-text search across title, username, URL, notes, tags, and attachment names
 - Filters by type, favorites, and trash
 - Live TOTP codes (RFC 6238, SHA-1/6 digits/30 s) with expiry progress
 - Copy buttons everywhere; password masking with explicit reveal
@@ -146,6 +166,18 @@ Sharing
 - Links expire after three days, enforced by the server and by the encrypted payload
 - The share key travels in the URL fragment, so the server only stores ciphertext
 - Active links can be listed and revoked; the link key is not stored, so copy it when created
+- Share links contain only the password. Attachments are never included; the share dialog
+  warns when the item has files.
+
+Attachments
+
+- Up to 10 MB per file, 20 files per item, 200 files and 100 MB total per account
+- Each file gets a random 32-byte key, wrapped inside the encrypted vault metadata
+- The server stores only ciphertext, a nonce, byte size, and opaque item id
+- Downloading decrypts in the browser and verifies the bound id, item, name, size, and type
+- Removing an attachment deletes the server blob; permanently deleting an item cleans up all
+  of its blobs
+- Encrypted backups keep attachment metadata but not file bytes
 
 Security
 
@@ -154,7 +186,10 @@ Security
 - KDF header authenticated as AEAD associated data
 - Share links: XChaCha20-Poly1305 with a random 32-byte key in the URL fragment, share id
   bound as AAD, and a 3-day expiry
-- Master password rotation (fresh salt, re-key, re-encrypt, single atomic server update)
+- Attachments: XChaCha20-Poly1305 with a random per-file key; attachment id, item id, name,
+  size, and MIME type bound as AAD
+- Master password rotation (fresh salt, re-key, re-encrypt, single atomic server update;
+  attachment file keys are re-wrapped, file blobs are not re-encrypted)
 - WebAuthn passkey second factor for Rook's own sign-in, required once a passkey is registered
 - One-time recovery code for the passkey second factor, shown once and stored only as a hash
 - Idle auto-lock (1/5/15/30/60 min), in-memory key wiping
@@ -176,10 +211,12 @@ Audit
 Data
 
 - Password generator (length, character classes, ambiguous-character filter, entropy readout)
-- Encrypted backup export (self-contained, needs the master password; new backups use the
-  `rook.vault` format, and pre-rename `keynest.vault` backups still import)
+- Encrypted backup export (needs the master password; new backups use the `rook.vault`
+  format, and pre-rename `keynest.vault` backups still import; attachment metadata is included
+  but file bytes are not)
 - CSV export for portability (with an explicit plaintext warning)
-- Encrypted backup import, merged by item id, including trash and version history
+- Encrypted backup import, merged by item id, including trash and version history; attachment
+  references are kept only when the encrypted file blob still exists for the account
 - Import from Chrome CSV, 1Password CSV, Bitwarden JSON/CSV, and Rook CSV; parsed locally,
   with duplicate detection and a preview before anything is saved
 - Optimistic concurrency: the server rejects a save based on a stale version (`CONFLICT`)
@@ -219,7 +256,7 @@ empty and unlocks immediately.
 ### Tests
 
 ```bash
-npm test           # crypto, vault, conflict merge, tombstones, sharing, generator, strength, TOTP, import, and passkey helpers
+npm test           # crypto, vault, attachments, conflict merge, tombstones, sharing, generator, strength, TOTP, import, and passkey helpers
 npm run typecheck
 npm run test:e2e   # build, start a disposable server, and run every Playwright flow
 ```
@@ -227,9 +264,11 @@ npm run test:e2e   # build, start a disposable server, and run every Playwright 
 The Playwright suite lives in `e2e/` and runs in CI. It covers register → save → reload
 locks → wrong password rejected → correct password decrypts → generator, import and
 duplicate detection, history/trash, sharing (including long and password-only items,
-revocation, expiry, and mobile), two-tab conflict merge/keep/use-server, and a WebAuthn
-passkey flow using Chromium's virtual authenticator. The passkey flow runs on `localhost`
-because WebAuthn RP IDs must be domain names; the rest of the suite stays on `127.0.0.1`.
+revocation, expiry, and mobile), encrypted attachments (ciphertext-only storage, download,
+reload persistence, removal, blob cleanup, and the share warning), two-tab conflict
+merge/keep/use-server, and a WebAuthn passkey flow using Chromium's virtual authenticator.
+The passkey flow runs on `localhost` because WebAuthn RP IDs must be domain names; the rest of
+the suite stays on `127.0.0.1`.
 See `e2e/README.md` for running individual flows against an existing server.
 
 Passkeys require a secure context: HTTPS in production, or `localhost` during development.
@@ -244,14 +283,15 @@ together to the public origin and RP ID.
 ```
 src/lib/crypto.ts          Argon2id, HKDF split, auth proof, AEAD helpers
 src/lib/vault.ts           entry schema (zod), seal/open, header AAD, history/trash/tombstones, conflict merge, search/sort
-src/lib/vault-context.tsx  unlock/register/save/conflict/re-key state machine, auto-lock, exports
+src/lib/attachments.ts     attachment schema, limits, AAD, per-file keys, binary seal/open
+src/lib/vault-context.tsx  unlock/register/save/conflict/re-key state machine, auto-lock, attachment flows, exports
 src/lib/share.ts           share payload schema, URL-fragment key encoding, seal/open
 src/lib/import.ts          Chrome/1Password/Bitwarden/Rook parsers and duplicate fingerprints
 src/lib/generator.ts       unbiased CSPRNG password generation + entropy
 src/lib/strength.ts        entropy estimator with sequence/repeat/common penalties
 src/lib/totp.ts            base32 + RFC 6238 via WebCrypto
 src/lib/passkeys.ts        passkey metadata type and recovery-code formatting
-src/server/api.ts          server functions (register, login, kdf, pull/push, rotate, share, passkeys)
+src/server/api.ts          server functions (register, login, kdf, pull/push, rotate, share, attachments, passkeys)
 src/server/db.server.ts    node:sqlite schema and queries
 src/server/webauthn.server.ts  WebAuthn ceremonies, RP/origin handling, recovery codes
 src/server/session.server.ts  cookie sessions, constant-time compare
@@ -273,22 +313,29 @@ src/routes/share.$shareId.tsx  public recipient page for an expiring share link
   valid RP ID; `127.0.0.1` is not.
 - A passkey prompt needs a user gesture, so the master-password step holds the derived key in
   memory and waits for an explicit "Use passkey" click instead of prompting automatically.
+- Attachments are separate blobs, not part of the vault save. Upload the encrypted file first,
+  then commit its metadata to the vault; remove metadata first, then delete the blob. The
+  ordering makes an interrupted operation leave an unreachable blob, never a live reference to
+  missing bytes.
+- Attachment metadata is not versioned with the item. Restoring an old credential version keeps
+  the current file list, so history can never point at a blob the user already removed.
 
 ---
 
 ## 7. Roadmap toward "80% of 1Password"
 
 Done: the vault, the crypto, the item types, TOTP, audit, generator, backups, rotation,
-item history, trash, permanent-delete tombstones, conflict recovery, expiring password-share
-links, import from Chrome, 1Password, Bitwarden, and Rook CSV, and a WebAuthn passkey second
-factor for Rook's own sign-in with a one-time recovery code.
+item history, trash, permanent-delete tombstones, conflict recovery, encrypted attachments,
+expiring password-share links, import from Chrome, 1Password, Bitwarden, and Rook CSV, and a
+WebAuthn passkey second factor for Rook's own sign-in with a one-time recovery code.
 
 Next, roughly in order of value:
 
-1. **Attachments** — encrypt file blobs separately, same key hierarchy.
-2. **Recipient-bound sharing** — replace bearer links with public-key envelopes per recipient,
+1. **Recipient-bound sharing** — replace bearer links with public-key envelopes per recipient,
    so a forwarded link cannot be opened by anyone else and access can be revoked per person.
-3. **Email breach monitoring** — periodic HIBP checks for account addresses.
+2. **Email breach monitoring** — periodic HIBP checks for account addresses.
+3. **Attachment-aware backups** — optionally include encrypted blobs in a backup archive, with
+   an explicit size cost and the same zero-knowledge guarantees.
 
 Passkeys here authenticate Rook's server session; they do not store credentials for, or act as
 an authenticator for, other websites. That requires a browser extension and remains out of

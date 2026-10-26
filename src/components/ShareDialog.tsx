@@ -176,6 +176,13 @@ export function ShareDialog({
           <span className="chip">3 days</span>
         </div>
 
+        {entry.attachments.length > 0 && (
+          <div className="flex items-start gap-2 rounded-lg border border-warn/25 bg-warn/5 px-3 py-2 text-[11px] leading-relaxed text-muted">
+            <Icon name="alert" size={13} className="mt-0.5 shrink-0 text-warn" />
+            <span>Attachments are not included in shared links. Only the password is shared.</span>
+          </div>
+        )}
+
         {visibleCreated ? (
           <div className="rounded-xl border border-success/25 bg-success/5 p-3">
             <div className="flex items-center gap-2 text-[12px] font-medium text-ink">
