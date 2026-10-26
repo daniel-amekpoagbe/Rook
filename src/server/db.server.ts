@@ -57,6 +57,16 @@ export function getDb(): DatabaseSync {
       created_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS attachments (
+      id         TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      entry_id   TEXT NOT NULL,
+      ciphertext TEXT NOT NULL,
+      nonce      TEXT NOT NULL,
+      size       INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS passkeys (
       id            TEXT PRIMARY KEY,
       user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -87,6 +97,8 @@ export function getDb(): DatabaseSync {
     );
 
     CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_attachments_user ON attachments(user_id);
+    CREATE INDEX IF NOT EXISTS idx_attachments_user_entry ON attachments(user_id, entry_id);
     CREATE INDEX IF NOT EXISTS idx_shares_user_entry ON shares(user_id, entry_id);
     CREATE INDEX IF NOT EXISTS idx_shares_expires ON shares(expires_at);
     CREATE INDEX IF NOT EXISTS idx_passkeys_user ON passkeys(user_id);
@@ -261,6 +273,92 @@ export function deleteShareForUser(id: string, userId: string): void {
 
 export function deleteExpiredShares(now: number): void {
   getDb().prepare('DELETE FROM shares WHERE expires_at <= ?').run(now)
+}
+
+export interface AttachmentRow {
+  id: string
+  user_id: string
+  entry_id: string
+  ciphertext: string
+  nonce: string
+  size: number
+  created_at: number
+}
+
+export interface AttachmentSummaryRow {
+  id: string
+  entry_id: string
+  size: number
+  created_at: number
+}
+
+export function createAttachment(row: AttachmentRow): void {
+  getDb()
+    .prepare(
+      `INSERT INTO attachments (id, user_id, entry_id, ciphertext, nonce, size, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      row.id,
+      row.user_id,
+      row.entry_id,
+      row.ciphertext,
+      row.nonce,
+      row.size,
+      row.created_at,
+    )
+}
+
+export function getAttachmentForUser(id: string, userId: string): AttachmentRow | undefined {
+  return getDb()
+    .prepare('SELECT * FROM attachments WHERE id = ? AND user_id = ?')
+    .get(id, userId) as AttachmentRow | undefined
+}
+
+export function deleteAttachmentForUser(id: string, userId: string): boolean {
+  const result = getDb()
+    .prepare('DELETE FROM attachments WHERE id = ? AND user_id = ?')
+    .run(id, userId)
+  return Number(result.changes) > 0
+}
+
+export function deleteAttachmentsForEntry(userId: string, entryId: string): number {
+  const result = getDb()
+    .prepare('DELETE FROM attachments WHERE user_id = ? AND entry_id = ?')
+    .run(userId, entryId)
+  return Number(result.changes)
+}
+
+export function countAttachmentsForEntry(userId: string, entryId: string): number {
+  const row = getDb()
+    .prepare('SELECT COUNT(*) AS count FROM attachments WHERE user_id = ? AND entry_id = ?')
+    .get(userId, entryId) as { count: number } | undefined
+  return row?.count ?? 0
+}
+
+export function countAttachmentsForUser(userId: string): number {
+  const row = getDb()
+    .prepare('SELECT COUNT(*) AS count FROM attachments WHERE user_id = ?')
+    .get(userId) as { count: number } | undefined
+  return row?.count ?? 0
+}
+
+export function sumAttachmentBytesForUser(userId: string): number {
+  const row = getDb()
+    .prepare('SELECT COALESCE(SUM(size), 0) AS total FROM attachments WHERE user_id = ?')
+    .get(userId) as { total: number } | undefined
+  return row?.total ?? 0
+}
+
+export function listAttachmentsForUser(userId: string): AttachmentSummaryRow[] {
+  return getDb()
+    .prepare(
+      `SELECT id, entry_id, size, created_at
+       FROM attachments
+       WHERE user_id = ?
+       ORDER BY created_at ASC`,
+    )
+    .all(userId) as unknown as AttachmentSummaryRow[]
 }
 
 export interface PasskeyRow {

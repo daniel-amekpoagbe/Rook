@@ -1,11 +1,13 @@
 import { z } from 'zod'
+import { attachmentSchema, MAX_ATTACHMENTS_PER_ENTRY } from './attachments'
 import { decrypt, encrypt, type KdfConfig, type SealedBlob } from './crypto'
 
 export const VAULT_FORMAT = 'rook.vault'
 /** Pre-rename backups remain readable; new saves use `rook.vault`. */
 export const LEGACY_VAULT_FORMAT = 'keynest.vault'
 export const VAULT_FORMAT_VERSION = 1
-export const VAULT_DATA_VERSION = 4
+/** Version 5 adds encrypted-file attachment metadata to entries. */
+export const VAULT_DATA_VERSION = 5
 export const MAX_ENTRIES = 10000
 export const MAX_HISTORY_VERSIONS = 20
 export const MAX_TRASH_ITEMS = 1000
@@ -47,6 +49,11 @@ export const entrySchema = z.object({
     .optional(),
   tags: z.array(z.string().max(50)).max(30).default([]),
   favorite: z.boolean().default(false),
+  /**
+   * Attachment metadata is encrypted with the vault. The file bytes live in a
+   * separate server row and are encrypted with the per-file key stored here.
+   */
+  attachments: z.array(attachmentSchema).max(MAX_ATTACHMENTS_PER_ENTRY).default([]),
   createdAt: z.string(),
   updatedAt: z.string(),
   /** Set only while an item is in the trash. */
@@ -74,6 +81,15 @@ export const historyVaultDataSchema = z.object({
   entries: z.array(entrySchema).max(MAX_ENTRIES),
   trash: z.array(entrySchema).max(MAX_TRASH_ITEMS).default([]),
   history: z.record(z.string(), z.array(entrySchema).max(MAX_HISTORY_VERSIONS)).default({}),
+})
+
+/** Version 4 is the pre-attachment schema; entries gain `attachments` on read. */
+export const v4VaultDataSchema = z.object({
+  version: z.literal(4),
+  entries: z.array(entrySchema).max(MAX_ENTRIES),
+  trash: z.array(entrySchema).max(MAX_TRASH_ITEMS).default([]),
+  history: z.record(z.string(), z.array(entrySchema).max(MAX_HISTORY_VERSIONS)).default({}),
+  tombstones: z.array(tombstoneSchema).max(MAX_TOMBSTONES).default([]),
 })
 
 export const vaultDataSchema = z.object({
@@ -117,12 +133,24 @@ export function emptyVault(): VaultData {
 }
 
 /**
- * Older vaults are migrated on read: v2 gains history and trash, and v3 gains
- * permanent-delete tombstones. The next save writes the current version.
+ * Older vaults are migrated on read: v2 gains history and trash, v3 gains
+ * permanent-delete tombstones, and v4 entries gain an empty attachment list.
+ * The next save writes the current version.
  */
 export function parseVaultData(value: unknown): VaultData {
   const current = vaultDataSchema.safeParse(value)
   if (current.success) return current.data
+
+  const v4 = v4VaultDataSchema.safeParse(value)
+  if (v4.success) {
+    return {
+      version: VAULT_DATA_VERSION,
+      entries: v4.data.entries,
+      trash: v4.data.trash,
+      history: v4.data.history,
+      tombstones: v4.data.tombstones,
+    }
+  }
 
   const history = historyVaultDataSchema.safeParse(value)
   if (history.success) {
@@ -211,6 +239,7 @@ export function newEntry(
     identity: fields.identity,
     tags: [],
     favorite: false,
+    attachments: [],
     createdAt: now,
     updatedAt: now,
   }
@@ -258,7 +287,16 @@ function activeCopy(entry: Entry): Entry {
   return active
 }
 
-/** Favorite changes and timestamps are metadata, not history-worthy content. */
+/**
+ * Attachment metadata is deliberately not versioned. History restores
+ * credential fields, not file references, so an old version can never point at
+ * a blob the user already removed.
+ */
+function historyCopy(entry: Entry): Entry {
+  return { ...activeCopy(entry), attachments: [] }
+}
+
+/** Favorite, attachment, and timestamp changes are not history-worthy content. */
 function entryContentKey(entry: Entry): string {
   return JSON.stringify({
     type: entry.type,
@@ -282,7 +320,7 @@ export function recordHistory(history: VaultHistory, entry: Entry): VaultHistory
   }
   return {
     ...history,
-    [entry.id]: [activeCopy(entry), ...versions].slice(0, MAX_HISTORY_VERSIONS),
+    [entry.id]: [historyCopy(entry), ...versions].slice(0, MAX_HISTORY_VERSIONS),
   }
 }
 
@@ -378,7 +416,9 @@ export function restoreVersion(
   return {
     ...data,
     entries: data.entries.map((item) =>
-      item.id === entryId ? touch(activeCopy(version)) : item,
+      item.id === entryId
+        ? { ...touch(activeCopy(version)), attachments: current.attachments }
+        : item,
     ),
     history: recordHistory(data.history, current),
     tombstones: data.tombstones.filter((item) => item.id !== entryId),
@@ -480,7 +520,7 @@ export function mergeVaultData(local: VaultData, remote: VaultData): VaultData {
     if (localState && remoteState && !localState.deleted && !remoteState.deleted) {
       const loser = winner === localState ? remoteState : localState
       if (entryContentKey(loser.entry) !== entryContentKey(winner.entry)) {
-        losingVersions.push(loser.entry)
+        losingVersions.push(historyCopy(loser.entry))
       }
     }
   }
@@ -496,7 +536,7 @@ export function mergeVaultData(local: VaultData, remote: VaultData): VaultData {
   for (const id of historyIds) {
     const byUpdatedAt = new Map<string, Entry>()
     for (const version of [...(local.history[id] ?? []), ...(remote.history[id] ?? [])]) {
-      if (!byUpdatedAt.has(version.updatedAt)) byUpdatedAt.set(version.updatedAt, version)
+      if (!byUpdatedAt.has(version.updatedAt)) byUpdatedAt.set(version.updatedAt, historyCopy(version))
     }
     const versions = [...byUpdatedAt.values()]
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
@@ -541,7 +581,14 @@ export function sortTrash(entries: Entry[]): Entry[] {
 export function matchesQuery(entry: Entry, query: string): boolean {
   const q = query.trim().toLowerCase()
   if (!q) return true
-  const haystack = [entry.title, entry.username, entry.url, entry.notes, ...entry.tags]
+  const haystack = [
+    entry.title,
+    entry.username,
+    entry.url,
+    entry.notes,
+    ...entry.tags,
+    ...entry.attachments.map((attachment) => attachment.name),
+  ]
     .filter(Boolean)
     .join(' ')
     .toLowerCase()

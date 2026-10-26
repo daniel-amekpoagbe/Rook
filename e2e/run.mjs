@@ -33,6 +33,7 @@ const passkeyBase = passkeyOrigin(externalBase ?? `http://127.0.0.1:${port}`)
 
 const scripts = [
   { file: 'e2e/vault.e2e.mjs' },
+  { file: 'e2e/attachments.e2e.mjs' },
   { file: 'e2e/passkey.e2e.mjs', env: { BASE_URL: passkeyBase } },
   { file: 'e2e/import.e2e.mjs' },
   { file: 'e2e/history-trash.e2e.mjs' },

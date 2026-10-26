@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useVault, type ConflictChoice } from '~/lib/vault-context'
 import { generateTotp, isValidTotpSecret, type TotpResult } from '~/lib/totp'
 import {
-  deleteTrashedEntry,
   hostOf,
   matchesQuery,
   newEntry,
@@ -16,6 +15,7 @@ import {
   type Entry,
   type EntryType,
 } from '~/lib/vault'
+import { AttachmentsSection } from './AttachmentsSection'
 import { AuditModal } from './AuditPanel'
 import { EntryForm, GeneratorModal, TYPE_META, newDraft } from './EntryEditor'
 import { SettingsModal } from './SettingsPanel'
@@ -407,6 +407,8 @@ function EntryDetail({
               </div>
             )}
 
+            <AttachmentsSection key={entry.id} entry={entry} readOnly={trashed} />
+
             {!trashed && history.length > 0 && (
               <div className="mt-6">
                 <div className="flex items-baseline justify-between gap-3">
@@ -476,8 +478,19 @@ function NavGroupLabel({ children }: { children: React.ReactNode }) {
 }
 
 export function VaultApp() {
-  const { data, handle, mutate, lock, sync, error, conflict, resolveConflict, lastSyncedAt, clearError } =
-    useVault()
+  const {
+    data,
+    handle,
+    mutate,
+    lock,
+    sync,
+    error,
+    conflict,
+    resolveConflict,
+    lastSyncedAt,
+    clearError,
+    deleteEntryPermanently,
+  } = useVault()
   const [resolving, setResolving] = useState<ConflictChoice | null>(null)
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<Filter>('all')
@@ -546,7 +559,16 @@ export function VaultApp() {
   const activeFilter = FILTERS.find((item) => item.value === filter) ?? FILTERS[0]
 
   function saveEntry(entry: Entry, record = true) {
-    mutate((current) => upsertEntry(current, entry, record))
+    mutate((current) => {
+      // Files are managed in the detail view. A form opened before an upload
+      // finished must not overwrite the newest attachment list.
+      const existing = current.entries.find((item) => item.id === entry.id)
+      return upsertEntry(
+        current,
+        existing ? { ...entry, attachments: existing.attachments } : entry,
+        record,
+      )
+    })
   }
 
   function moveToTrash(id: string) {
@@ -565,10 +587,14 @@ export function VaultApp() {
     mutate((current) => restoreVersion(current, entryId, updatedAt))
   }
 
-  function deleteForever(id: string) {
-    mutate((current) => deleteTrashedEntry(current, id))
+  async function deleteForever(id: string) {
     if (selectedId === id) setSelectedId(null)
     setDeleteForeverTarget(null)
+    try {
+      await deleteEntryPermanently(id)
+    } catch {
+      // The vault context surfaces save/conflict errors in the main banner.
+    }
   }
 
   function toggleFavorite(entry: Entry) {
@@ -1124,7 +1150,7 @@ export function VaultApp() {
       >
         <p className="text-[13px] leading-relaxed text-muted">
           <span className="font-medium text-ink">{deleteForeverTarget?.title}</span> will be removed permanently,
-          including its version history. This cannot be undone.
+          including its version history and encrypted attachments. This cannot be undone.
         </p>
         <div className="mt-5 flex justify-end gap-2">
           <button type="button" className="btn-secondary" onClick={() => setDeleteForeverTarget(null)}>
@@ -1134,7 +1160,7 @@ export function VaultApp() {
             type="button"
             className="btn-danger-solid"
             onClick={() => {
-              if (deleteForeverTarget) deleteForever(deleteForeverTarget.id)
+              if (deleteForeverTarget) void deleteForever(deleteForeverTarget.id)
             }}
           >
             <Icon name="trash" size={14} /> Delete permanently

@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import { encrypt, newKdfConfig } from '../src/lib/crypto'
 import {
   MAX_HISTORY_VERSIONS,
+  VAULT_DATA_VERSION,
   deleteTrashedEntry,
   emptyVault,
   headerAad,
@@ -35,10 +36,11 @@ test('version 2 vaults migrate to the current schema on read', () => {
   }
 
   const opened = openVault(sealed, key)
-  assert.equal(opened.version, 4)
+  assert.equal(opened.version, VAULT_DATA_VERSION)
   assert.deepEqual(opened.trash, [])
   assert.deepEqual(opened.history, {})
   assert.deepEqual(opened.tombstones, [])
+  assert.deepEqual(opened.entries[0]?.attachments, [])
   assert.equal(opened.entries[0]?.title, 'Legacy login')
   assert.equal(opened.entries[0]?.password, 'legacy-secret')
 })
@@ -56,8 +58,9 @@ test('version 3 vaults gain permanent-delete tombstones on read', () => {
   }
 
   const opened = openVault(sealed, key)
-  assert.equal(opened.version, 4)
+  assert.equal(opened.version, VAULT_DATA_VERSION)
   assert.deepEqual(opened.tombstones, [])
+  assert.deepEqual(opened.entries[0]?.attachments, [])
   assert.equal(opened.entries[0]?.title, 'Existing login')
 })
 

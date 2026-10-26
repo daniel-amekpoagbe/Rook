@@ -12,6 +12,17 @@ import {
   type PublicKeyCredentialRequestOptionsJSON,
 } from '@simplewebauthn/browser'
 import {
+  attachmentAad,
+  decodeAttachmentKey,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENTS_PER_ENTRY,
+  newAttachmentKey,
+  openAttachment,
+  safeAttachmentName,
+  sealAttachment,
+  type Attachment,
+} from './attachments'
+import {
   authProof,
   deriveAuthKey,
   deriveMasterKey,
@@ -20,6 +31,7 @@ import {
   type KdfConfig,
 } from './crypto'
 import {
+  deleteTrashedEntry,
   emptyVault,
   entryFingerprint,
   isSupportedVaultFormat,
@@ -31,6 +43,8 @@ import {
   openVault,
   openVaultWithFallback,
   sealVault,
+  touch,
+  upsertEntry,
   VAULT_FORMAT_VERSION,
   type EncryptedVault,
   type Entry,
@@ -38,9 +52,13 @@ import {
   type VaultData,
 } from './vault'
 import {
+  deleteAttachmentFn,
+  deleteAttachmentsForEntryFn,
   finishPasskeyLoginFn,
   finishPasskeyRecoveryFn,
+  getAttachmentFn,
   kdfFn,
+  listAttachmentsFn,
   loginFn,
   logoutFn,
   meFn,
@@ -48,6 +66,7 @@ import {
   pushVaultFn,
   registerFn,
   rotateFn,
+  uploadAttachmentFn,
   verifyAuthFn,
 } from '~/server/api'
 
@@ -86,6 +105,18 @@ const ERROR_MESSAGES: Record<string, string> = {
   INVALID_RECOVERY_CODE: 'That recovery code is not valid.',
   RECOVERY_UNAVAILABLE: 'No recovery code is available for this account.',
   WEBAUTHN_CONFIG: 'Passkeys are not configured correctly on the server.',
+  ATTACHMENT_TOO_LARGE: 'Attachments must be 10 MB or smaller.',
+  ATTACHMENT_LIMIT: 'This item has reached its attachment limit, or the account is at 200 attachments.',
+  ATTACHMENT_QUOTA: 'This account has reached its 100 MB attachment storage limit.',
+  ATTACHMENT_NOT_FOUND: 'That attachment is no longer available.',
+  ATTACHMENT_EXISTS: 'That attachment already exists.',
+  ATTACHMENT_EMPTY: 'Choose a non-empty file.',
+  ATTACHMENT_READ_FAILED: 'The file could not be read.',
+  ATTACHMENT_INTEGRITY: 'The attachment could not be verified. It may be corrupted.',
+  ATTACHMENT_INVALID: 'The attachment upload was malformed.',
+  ATTACHMENT_KEY_INVALID: 'The attachment key is invalid.',
+  ATTACHMENT_CLEANUP_FAILED: 'The attachment was removed, but server cleanup failed.',
+  ENTRY_NOT_FOUND: 'That item no longer exists.',
 }
 
 export function friendlyError(error: unknown): string {
@@ -136,6 +167,11 @@ interface Secrets {
   vaultKey: Uint8Array
 }
 
+interface SaveWaiter {
+  resolve: () => void
+  reject: (error: unknown) => void
+}
+
 interface PendingSecrets {
   masterKey: Uint8Array
   kdf: KdfConfig
@@ -169,6 +205,13 @@ interface VaultContextValue {
   lock: () => void
   signOut: () => Promise<void>
   mutate: (change: (data: VaultData) => VaultData) => void
+  addAttachment: (entryId: string, file: File) => Promise<Attachment>
+  removeAttachment: (entryId: string, attachmentId: string) => Promise<void>
+  downloadAttachment: (
+    entryId: string,
+    attachment: Attachment,
+  ) => Promise<{ blob: Blob; name: string }>
+  deleteEntryPermanently: (entryId: string) => Promise<void>
   changeMasterPassword: (current: string, next: string) => Promise<void>
   exportBackup: () => EncryptedVault | null
   exportCsv: () => string | null
@@ -205,7 +248,17 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const pendingPasskeyRef = useRef<PendingPasskey | null>(null)
   const pendingSecretsRef = useRef<PendingSecrets | null>(null)
   const savingRef = useRef(false)
+  const saveWaitersRef = useRef<SaveWaiter[]>([])
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const settleSaveWaiters = useCallback((error?: unknown) => {
+    const waiters = saveWaitersRef.current
+    saveWaitersRef.current = []
+    for (const waiter of waiters) {
+      if (error) waiter.reject(error)
+      else waiter.resolve()
+    }
+  }, [])
 
   const clearPendingPasskey = useCallback(() => {
     const pending = pendingSecretsRef.current
@@ -248,6 +301,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 
   const lock = useCallback(() => {
     clearPendingPasskey()
+    settleSaveWaiters(new Error('Vault is locked'))
     pendingRef.current = null
     conflictRef.current = null
     wipe(secretsRef.current)
@@ -259,7 +313,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     setConflict(null)
     setStatus('locked')
     setSync('idle')
-  }, [clearPendingPasskey])
+  }, [clearPendingPasskey, settleSaveWaiters])
 
   // Idle auto-lock
   useEffect(() => {
@@ -321,10 +375,17 @@ export function VaultProvider({ children }: { children: ReactNode }) {
    * Writes are serialized so overlapping mutations cannot race on the version.
    */
   const flushSaves = useCallback(async () => {
-    if (savingRef.current || conflictRef.current) return
+    if (savingRef.current) return
+    if (conflictRef.current) {
+      settleSaveWaiters(new Error('CONFLICT'))
+      return
+    }
     const secrets = secretsRef.current
     const kdf = kdfRef.current
-    if (!secrets || !kdf) return
+    if (!secrets || !kdf) {
+      settleSaveWaiters(new Error('Vault is locked'))
+      return
+    }
 
     savingRef.current = true
     try {
@@ -355,19 +416,22 @@ export function VaultProvider({ children }: { children: ReactNode }) {
               setSync('error')
               setError(friendlyError(pullError))
             }
+            settleSaveWaiters(new Error('CONFLICT'))
             return
           }
 
           pendingRef.current = null
           setSync('error')
           setError(friendlyError(caught))
+          settleSaveWaiters(caught)
           return
         }
       }
+      settleSaveWaiters()
     } finally {
       savingRef.current = false
     }
-  }, [enterConflict, pullRemoteVault])
+  }, [enterConflict, pullRemoteVault, settleSaveWaiters])
 
   const queueSave = useCallback(
     (next: VaultData) => {
@@ -388,6 +452,28 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       queueSave(next)
     },
     [queueSave],
+  )
+
+  /**
+   * Attachment operations need to know that the vault snapshot referencing a
+   * blob reached the server before the blob is uploaded or deleted.
+   */
+  const mutateAndWait = useCallback(
+    async (change: (current: VaultData) => VaultData) => {
+      const current = dataRef.current
+      if (!current) throw new Error('Vault is locked')
+      if (conflictRef.current) throw new Error('CONFLICT')
+      const next = change(current)
+      dataRef.current = next
+      setData(next)
+      pendingRef.current = next
+      const saved = new Promise<void>((resolve, reject) => {
+        saveWaitersRef.current.push({ resolve, reject })
+      })
+      void flushSaves()
+      await saved
+    },
+    [flushSaves],
   )
 
   const resolveConflict = useCallback(
@@ -464,6 +550,200 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       }
     },
     [enterConflict, pullRemoteVault],
+  )
+
+  const addAttachment = useCallback(
+    async (entryId: string, file: File): Promise<Attachment> => {
+      const secrets = secretsRef.current
+      const current = dataRef.current
+      if (!secrets || !current) throw new Error('Vault is locked')
+      if (conflictRef.current) throw new Error('CONFLICT')
+      if (file.size <= 0) throw new Error('ATTACHMENT_EMPTY')
+      if (file.size > MAX_ATTACHMENT_BYTES) throw new Error('ATTACHMENT_TOO_LARGE')
+
+      const entry = current.entries.find((item) => item.id === entryId)
+      if (!entry) throw new Error('ENTRY_NOT_FOUND')
+      if (entry.attachments.length >= MAX_ATTACHMENTS_PER_ENTRY) {
+        throw new Error('ATTACHMENT_LIMIT')
+      }
+
+      const id = crypto.randomUUID()
+      const name = safeAttachmentName(file.name)
+      const type = file.type.trim().slice(0, 200) || undefined
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      if (bytes.byteLength !== file.size) {
+        bytes.fill(0)
+        throw new Error('ATTACHMENT_READ_FAILED')
+      }
+
+      const size = bytes.byteLength
+      const { key, encoded } = newAttachmentKey()
+      const aad = attachmentAad(id, entryId, name, size, type)
+      let sealed
+      try {
+        sealed = sealAttachment(key, bytes, aad)
+      } finally {
+        bytes.fill(0)
+        key.fill(0)
+      }
+
+      const attachment: Attachment = {
+        id,
+        name,
+        size,
+        type,
+        key: encoded,
+        createdAt: new Date().toISOString(),
+      }
+
+      await uploadAttachmentFn({
+        data: {
+          id,
+          entryId,
+          ciphertext: sealed.ciphertext,
+          nonce: sealed.nonce,
+          size,
+        },
+      })
+
+      try {
+        await mutateAndWait((latest) => {
+          const target = latest.entries.find((item) => item.id === entryId)
+          if (!target) throw new Error('ENTRY_NOT_FOUND')
+          return upsertEntry(
+            latest,
+            touch({
+              ...target,
+              attachments: [...target.attachments, attachment],
+            }),
+            false,
+          )
+        })
+      } catch (caught) {
+        // The metadata is kept when the save is conflicted or retryable. Only
+        // delete the blob when it never entered the local vault at all.
+        const referenced = dataRef.current?.entries.some(
+          (item) =>
+            item.id === entryId && item.attachments.some((item) => item.id === id),
+        )
+        if (!referenced) {
+          try {
+            await deleteAttachmentFn({ data: { id } })
+          } catch {
+            // Best effort; an unreachable blob is safer than a broken reference.
+          }
+        }
+        throw caught
+      }
+
+      return attachment
+    },
+    [mutateAndWait],
+  )
+
+  const downloadAttachment = useCallback(
+    async (entryId: string, attachment: Attachment) => {
+      const secrets = secretsRef.current
+      const current = dataRef.current
+      if (!secrets || !current) throw new Error('Vault is locked')
+
+      const entry = [...current.entries, ...current.trash].find(
+        (item) => item.id === entryId,
+      )
+      if (
+        !entry ||
+        !entry.attachments.some((item) => item.id === attachment.id)
+      ) {
+        throw new Error('ATTACHMENT_NOT_FOUND')
+      }
+
+      const remote = await getAttachmentFn({ data: { id: attachment.id } })
+      if (remote.size !== attachment.size) throw new Error('ATTACHMENT_INTEGRITY')
+
+      const key = decodeAttachmentKey(attachment.key)
+      try {
+        const bytes = openAttachment(
+          key,
+          { ciphertext: remote.ciphertext, nonce: remote.nonce },
+          attachmentAad(
+            attachment.id,
+            entryId,
+            attachment.name,
+            attachment.size,
+            attachment.type,
+          ),
+        )
+        if (bytes.byteLength !== attachment.size) {
+          throw new Error('ATTACHMENT_INTEGRITY')
+        }
+        const buffer = new ArrayBuffer(bytes.byteLength)
+        new Uint8Array(buffer).set(bytes)
+        bytes.fill(0)
+        return {
+          blob: new Blob([buffer], {
+            type: attachment.type || 'application/octet-stream',
+          }),
+          name: attachment.name,
+        }
+      } finally {
+        key.fill(0)
+      }
+    },
+    [],
+  )
+
+  const removeAttachment = useCallback(
+    async (entryId: string, attachmentId: string) => {
+      const current = dataRef.current
+      if (!current) throw new Error('Vault is locked')
+      const entry = current.entries.find((item) => item.id === entryId)
+      if (!entry?.attachments.some((item) => item.id === attachmentId)) return
+
+      await mutateAndWait((latest) => {
+        const target = latest.entries.find((item) => item.id === entryId)
+        if (!target) throw new Error('ENTRY_NOT_FOUND')
+        return upsertEntry(
+          latest,
+          touch({
+            ...target,
+            attachments: target.attachments.filter(
+              (item) => item.id !== attachmentId,
+            ),
+          }),
+          false,
+        )
+      })
+
+      try {
+        await deleteAttachmentFn({ data: { id: attachmentId } })
+      } catch {
+        // The vault no longer references this blob. Keep the removal successful
+        // and report that server-side cleanup did not finish.
+        throw new Error('ATTACHMENT_CLEANUP_FAILED')
+      }
+    },
+    [mutateAndWait],
+  )
+
+  const deleteEntryPermanently = useCallback(
+    async (entryId: string) => {
+      const current = dataRef.current
+      if (!current) throw new Error('Vault is locked')
+      const trashed = current.trash.find((item) => item.id === entryId)
+      if (!trashed) return
+
+      await mutateAndWait((latest) => deleteTrashedEntry(latest, entryId))
+
+      if (trashed.attachments.length > 0) {
+        try {
+          await deleteAttachmentsForEntryFn({ data: { entryId } })
+        } catch {
+          // The vault no longer references the entry; an unreachable blob is
+          // preferable to resurrecting a permanently deleted item.
+        }
+      }
+    },
+    [mutateAndWait],
   )
 
   const finishUnlock = useCallback(
@@ -632,13 +912,21 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const changeMasterPassword = useCallback(async (current: string, next: string) => {
     const secrets = secretsRef.current
     const kdf = kdfRef.current
-    const payload = dataRef.current
-    if (!secrets || !kdf || !payload) throw new Error('Vault is locked')
+    if (!secrets || !kdf || !dataRef.current) throw new Error('Vault is locked')
 
     // Prove we still know the current password before re-keying.
     const checkKey = deriveAuthKey(await deriveMasterKey(current, kdf))
     if (!handle) throw new Error('Not signed in')
-    await verifyAuthFn({ data: { handle, authHash: authProof(checkKey) } })
+    try {
+      await verifyAuthFn({ data: { handle, authHash: authProof(checkKey) } })
+    } finally {
+      checkKey.fill(0)
+    }
+
+    // Read the latest snapshot after the awaits so an attachment or edit that
+    // landed during verification is included in the re-encrypted vault.
+    const payload = dataRef.current
+    if (!payload) throw new Error('Vault is locked')
 
     const nextKdf = newKdfConfig()
     const nextMaster = await deriveMasterKey(next, nextKdf)
@@ -741,23 +1029,40 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       const masterKey = await deriveMasterKey(password, parsed.kdf)
       const imported = openVault(parsed, deriveVaultKey(masterKey))
 
+      // Backups contain attachment metadata but not the encrypted file blobs.
+      // Keep references only when the blob already exists for this account.
+      const availableAttachmentIds = new Set(
+        (await listAttachmentsFn()).attachments.map((attachment) => attachment.id),
+      )
+      const keepAvailableAttachments = (entry: Entry): Entry => ({
+        ...entry,
+        attachments: entry.attachments.filter((attachment) =>
+          availableAttachmentIds.has(attachment.id),
+        ),
+      })
+
       // Merge by id so importing a backup never silently deletes newer local items.
       const local = dataRef.current ?? emptyVault()
       const mergedEntries = new Map(local.entries.map((entry) => [entry.id, entry]))
       const mergedTrash = new Map(local.trash.map((entry) => [entry.id, entry]))
 
       for (const entry of imported.entries) {
-        mergedEntries.set(entry.id, entry)
-        mergedTrash.delete(entry.id)
+        const safe = keepAvailableAttachments(entry)
+        mergedEntries.set(safe.id, safe)
+        mergedTrash.delete(safe.id)
       }
       for (const entry of imported.trash) {
-        if (!mergedEntries.has(entry.id)) mergedTrash.set(entry.id, entry)
+        const safe = keepAvailableAttachments(entry)
+        if (!mergedEntries.has(safe.id)) mergedTrash.set(safe.id, safe)
       }
 
       const mergedHistory = { ...local.history }
       for (const [id, versions] of Object.entries(imported.history)) {
         const byUpdatedAt = new Map<string, Entry>()
-        for (const version of [...(mergedHistory[id] ?? []), ...versions]) {
+        for (const version of [
+          ...(mergedHistory[id] ?? []),
+          ...versions.map(keepAvailableAttachments),
+        ]) {
           byUpdatedAt.set(version.updatedAt, version)
         }
         mergedHistory[id] = [...byUpdatedAt.values()]
@@ -824,6 +1129,10 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     lock,
     signOut,
     mutate,
+    addAttachment,
+    removeAttachment,
+    downloadAttachment,
+    deleteEntryPermanently,
     changeMasterPassword,
     exportBackup,
     exportCsv,
