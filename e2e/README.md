@@ -2,7 +2,7 @@
 
 These flows run against a real Rook server with a disposable SQLite database.
 They cover registration and unlock, import, history/trash, sharing, mobile
-sharing, and conflict recovery.
+sharing, conflict recovery, and a WebAuthn passkey flow.
 
 ## Run the whole suite
 
@@ -23,6 +23,24 @@ npm run test:e2e:only
 
 `DB_PATH` is required by the share flow because it checks that the database
 contains ciphertext only and that expired links are cleaned up.
+
+## Passkey flow and origins
+
+WebAuthn RP IDs must be domain names. The suite normally runs on
+`127.0.0.1:3100`, but the passkey flow is launched with `localhost` instead;
+`e2e/run.mjs` rewrites a loopback `E2E_BASE_URL` to `localhost` for that flow
+only. `localhost` is also a secure context, so passkeys work over plain HTTP
+during development. In production, passkeys require HTTPS.
+
+The passkey flow attaches Chromium's virtual authenticator through CDP. It
+registers a passkey, verifies that the master password alone no longer unlocks,
+unlocks with the passkey, unlocks with the recovery code, then removes the last
+passkey and confirms password-only unlock works again. No real authenticator or
+browser extension is involved.
+
+A passkey is bound to its origin. A credential registered at
+`http://localhost:3100` will not work at `http://127.0.0.1:3100`. Use the same
+address each time.
 
 ## Local browser selection
 

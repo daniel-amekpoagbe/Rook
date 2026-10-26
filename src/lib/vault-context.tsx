@@ -8,6 +8,10 @@ import {
   type ReactNode,
 } from 'react'
 import {
+  startAuthentication,
+  type PublicKeyCredentialRequestOptionsJSON,
+} from '@simplewebauthn/browser'
+import {
   authProof,
   deriveAuthKey,
   deriveMasterKey,
@@ -34,6 +38,8 @@ import {
   type VaultData,
 } from './vault'
 import {
+  finishPasskeyLoginFn,
+  finishPasskeyRecoveryFn,
   kdfFn,
   loginFn,
   logoutFn,
@@ -42,6 +48,7 @@ import {
   pushVaultFn,
   registerFn,
   rotateFn,
+  verifyAuthFn,
 } from '~/server/api'
 
 type Status = 'booting' | 'locked' | 'unlocked'
@@ -71,9 +78,32 @@ const ERROR_MESSAGES: Record<string, string> = {
   UNAUTHENTICATED: 'Your session expired. Unlock again.',
   CONFLICT: 'This vault changed in another session. Resolve the conflict before saving.',
   VAULT_MISSING: 'No vault found for this account.',
+  PASSKEY_CHALLENGE_EXPIRED: 'That passkey request expired. Unlock again.',
+  PASSKEY_REGISTRATION_FAILED: 'The passkey could not be registered. Try again.',
+  PASSKEY_LOGIN_FAILED: 'Passkey verification failed. Unlock again.',
+  PASSKEY_NOT_FOUND: 'That passkey is not registered for this account.',
+  PASSKEY_ALREADY_REGISTERED: 'That passkey is already registered.',
+  INVALID_RECOVERY_CODE: 'That recovery code is not valid.',
+  RECOVERY_UNAVAILABLE: 'No recovery code is available for this account.',
+  WEBAUTHN_CONFIG: 'Passkeys are not configured correctly on the server.',
 }
 
 export function friendlyError(error: unknown): string {
+  if (error instanceof Error) {
+    if (error.name === 'NotAllowedError' || error.name === 'AbortError') {
+      return 'Passkey verification was canceled.'
+    }
+    if (error.name === 'SecurityError') {
+      return 'Passkeys require HTTPS or localhost.'
+    }
+    if (error.name === 'InvalidStateError') {
+      return 'That passkey is already registered.'
+    }
+    if (error.name === 'NotSupportedError') {
+      return 'This browser or authenticator does not support passkeys.'
+    }
+  }
+
   const message = error instanceof Error ? error.message : String(error)
   if (ERROR_MESSAGES[message]) return ERROR_MESSAGES[message]
 
@@ -106,6 +136,19 @@ interface Secrets {
   vaultKey: Uint8Array
 }
 
+interface PendingSecrets {
+  masterKey: Uint8Array
+  kdf: KdfConfig
+  handle: string
+}
+
+export interface PendingPasskey {
+  challengeId: string
+  options: PublicKeyCredentialRequestOptionsJSON
+  recoveryChallengeId: string | null
+  handle: string
+}
+
 interface VaultContextValue {
   status: Status
   handle: string | null
@@ -113,12 +156,16 @@ interface VaultContextValue {
   sync: SyncState
   error: string | null
   conflict: VaultConflict | null
+  pendingPasskey: PendingPasskey | null
   resolveConflict: (choice: ConflictChoice) => Promise<void>
   lastSyncedAt: number | null
   autoLockMinutes: number
   setAutoLockMinutes: (minutes: number) => void
   register: (handle: string, password: string) => Promise<void>
   unlock: (handle: string, password: string) => Promise<void>
+  completePasskeyUnlock: () => Promise<void>
+  completeRecoveryUnlock: (code: string) => Promise<void>
+  cancelPasskeyUnlock: () => void
   lock: () => void
   signOut: () => Promise<void>
   mutate: (change: (data: VaultData) => VaultData) => void
@@ -145,6 +192,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const [sync, setSync] = useState<SyncState>('idle')
   const [error, setError] = useState<string | null>(null)
   const [conflict, setConflict] = useState<VaultConflict | null>(null)
+  const [pendingPasskey, setPendingPasskey] = useState<PendingPasskey | null>(null)
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null)
   const [autoLockMinutes, setAutoLockMinutesState] = useState(5)
 
@@ -154,8 +202,18 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const versionRef = useRef(0)
   const pendingRef = useRef<VaultData | null>(null)
   const conflictRef = useRef<ConflictSnapshot | null>(null)
+  const pendingPasskeyRef = useRef<PendingPasskey | null>(null)
+  const pendingSecretsRef = useRef<PendingSecrets | null>(null)
   const savingRef = useRef(false)
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const clearPendingPasskey = useCallback(() => {
+    const pending = pendingSecretsRef.current
+    if (pending) pending.masterKey.fill(0)
+    pendingSecretsRef.current = null
+    pendingPasskeyRef.current = null
+    setPendingPasskey(null)
+  }, [])
 
   useEffect(() => {
     const stored = localStorage.getItem('rook.autoLockMinutes') ?? localStorage.getItem('keynest.autoLockMinutes')
@@ -189,6 +247,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const lock = useCallback(() => {
+    clearPendingPasskey()
     pendingRef.current = null
     conflictRef.current = null
     wipe(secretsRef.current)
@@ -200,7 +259,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     setConflict(null)
     setStatus('locked')
     setSync('idle')
-  }, [])
+  }, [clearPendingPasskey])
 
   // Idle auto-lock
   useEffect(() => {
@@ -407,8 +466,49 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     [enterConflict, pullRemoteVault],
   )
 
+  const finishUnlock = useCallback(
+    async (masterKey: Uint8Array, kdf: KdfConfig, userHandle: string) => {
+      const vaultKey = deriveVaultKey(masterKey)
+      try {
+        const remote = await pullVaultFn()
+        if (!remote) throw new Error('VAULT_MISSING')
+
+        const decrypted = openVaultWithFallback(
+          {
+            version: VAULT_FORMAT_VERSION,
+            kdf,
+            ciphertext: remote.ciphertext,
+            nonce: remote.nonce,
+            updatedAt: new Date(remote.updatedAt).toISOString(),
+          },
+          vaultKey,
+        )
+
+        wipe(secretsRef.current)
+        secretsRef.current = { masterKey, vaultKey }
+        kdfRef.current = kdf
+        dataRef.current = decrypted
+        pendingRef.current = null
+        conflictRef.current = null
+        versionRef.current = remote.version
+        setData(decrypted)
+        setConflict(null)
+        setHandle(userHandle.trim().toLowerCase())
+        setStatus('unlocked')
+        setSync('saved')
+        setLastSyncedAt(remote.updatedAt)
+      } catch (caught) {
+        masterKey.fill(0)
+        vaultKey.fill(0)
+        throw caught
+      }
+    },
+    [],
+  )
+
   const register = useCallback(async (userHandle: string, password: string) => {
     setError(null)
+    clearPendingPasskey()
     const kdf = newKdfConfig()
     const masterKey = await deriveMasterKey(password, kdf)
     const vaultKey = deriveVaultKey(masterKey)
@@ -438,43 +538,90 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     setStatus('unlocked')
     setSync('saved')
     setLastSyncedAt(Date.now())
-  }, [])
+  }, [clearPendingPasskey])
 
-  const unlock = useCallback(async (userHandle: string, password: string) => {
-    setError(null)
-    const { kdf } = (await kdfFn({ data: { handle: userHandle } })) as { kdf: KdfConfig }
-    const masterKey = await deriveMasterKey(password, kdf)
-    const authKey = deriveAuthKey(masterKey)
-    await loginFn({ data: { handle: userHandle, authHash: authProof(authKey) } })
+  const unlock = useCallback(
+    async (userHandle: string, password: string) => {
+      setError(null)
+      clearPendingPasskey()
+      const { kdf } = (await kdfFn({ data: { handle: userHandle } })) as { kdf: KdfConfig }
+      const masterKey = await deriveMasterKey(password, kdf)
 
-    const remote = await pullVaultFn()
-    if (!remote) throw new Error('VAULT_MISSING')
+      try {
+        const authKey = deriveAuthKey(masterKey)
+        const result = await loginFn({
+          data: { handle: userHandle, authHash: authProof(authKey) },
+        })
 
-    const vaultKey = deriveVaultKey(masterKey)
-    const decrypted = openVaultWithFallback(
-      {
-        version: VAULT_FORMAT_VERSION,
-        kdf,
-        ciphertext: remote.ciphertext,
-        nonce: remote.nonce,
-        updatedAt: new Date(remote.updatedAt).toISOString(),
-      },
-      vaultKey,
-    )
+        if ('passkeyRequired' in result && result.passkeyRequired) {
+          const pending: PendingPasskey = {
+            challengeId: result.challengeId,
+            options: result.options as PublicKeyCredentialRequestOptionsJSON,
+            recoveryChallengeId: result.recoveryChallengeId,
+            handle: result.handle,
+          }
+          pendingSecretsRef.current = { masterKey, kdf, handle: result.handle }
+          pendingPasskeyRef.current = pending
+          setPendingPasskey(pending)
+          return
+        }
 
-    secretsRef.current = { masterKey, vaultKey }
-    kdfRef.current = kdf
-    dataRef.current = decrypted
-    pendingRef.current = null
-    conflictRef.current = null
-    versionRef.current = remote.version
-    setData(decrypted)
-    setConflict(null)
-    setHandle(userHandle.trim().toLowerCase())
-    setStatus('unlocked')
-    setSync('saved')
-    setLastSyncedAt(remote.updatedAt)
-  }, [])
+        await finishUnlock(masterKey, kdf, result.handle)
+      } catch (caught) {
+        masterKey.fill(0)
+        throw caught
+      }
+    },
+    [clearPendingPasskey, finishUnlock],
+  )
+
+  const completePasskeyUnlock = useCallback(async () => {
+    const pending = pendingPasskeyRef.current
+    const secrets = pendingSecretsRef.current
+    if (!pending || !secrets) throw new Error('PASSKEY_CHALLENGE_EXPIRED')
+
+    try {
+      const response = await startAuthentication({ optionsJSON: pending.options })
+      const result = await finishPasskeyLoginFn({
+        data: { challengeId: pending.challengeId, response },
+      })
+      await finishUnlock(secrets.masterKey, secrets.kdf, result.handle)
+      pendingSecretsRef.current = null
+      pendingPasskeyRef.current = null
+      setPendingPasskey(null)
+    } catch (caught) {
+      clearPendingPasskey()
+      throw caught
+    }
+  }, [clearPendingPasskey, finishUnlock])
+
+  const completeRecoveryUnlock = useCallback(
+    async (code: string) => {
+      const pending = pendingPasskeyRef.current
+      const secrets = pendingSecretsRef.current
+      if (!pending?.recoveryChallengeId || !secrets) {
+        throw new Error('RECOVERY_UNAVAILABLE')
+      }
+
+      try {
+        const result = await finishPasskeyRecoveryFn({
+          data: { challengeId: pending.recoveryChallengeId, code },
+        })
+        await finishUnlock(secrets.masterKey, secrets.kdf, result.handle)
+        pendingSecretsRef.current = null
+        pendingPasskeyRef.current = null
+        setPendingPasskey(null)
+      } catch (caught) {
+        clearPendingPasskey()
+        throw caught
+      }
+    },
+    [clearPendingPasskey, finishUnlock],
+  )
+
+  const cancelPasskeyUnlock = useCallback(() => {
+    clearPendingPasskey()
+  }, [clearPendingPasskey])
 
   const signOut = useCallback(async () => {
     lock()
@@ -491,7 +638,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     // Prove we still know the current password before re-keying.
     const checkKey = deriveAuthKey(await deriveMasterKey(current, kdf))
     if (!handle) throw new Error('Not signed in')
-    await loginFn({ data: { handle, authHash: authProof(checkKey) } })
+    await verifyAuthFn({ data: { handle, authHash: authProof(checkKey) } })
 
     const nextKdf = newKdfConfig()
     const nextMaster = await deriveMasterKey(next, nextKdf)
@@ -664,12 +811,16 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     sync,
     error,
     conflict,
+    pendingPasskey,
     resolveConflict,
     lastSyncedAt,
     autoLockMinutes,
     setAutoLockMinutes,
     register,
     unlock,
+    completePasskeyUnlock,
+    completeRecoveryUnlock,
+    cancelPasskeyUnlock,
     lock,
     signOut,
     mutate,
