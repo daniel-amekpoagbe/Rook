@@ -22,7 +22,13 @@ import {
 } from '../src/lib/vault'
 import { DEFAULT_GENERATOR_OPTIONS, generatePassword, generatorEntropyBits } from '../src/lib/generator'
 import { scorePassword } from '../src/lib/strength'
-import { base32Decode, generateTotp, isValidTotpSecret, normalizeTotpSecret } from '../src/lib/totp'
+import {
+  base32Decode,
+  generateTotp,
+  isValidTotpSecret,
+  normalizeTotpSecret,
+  parseTotp,
+} from '../src/lib/totp'
 import { brandForEntry, brandForUrl } from '../src/components/BrandIcon'
 
 // Cheap KDF for tests; production params are exercised once below.
@@ -65,12 +71,22 @@ test('vault seals and opens, and rejects tampering', async () => {
   const vaultKey = deriveVaultKey(master)
 
   const data = emptyVault()
-  data.entries.push(newEntry('login', { title: 'GitHub', username: 'daniel', password: 'abc123' }))
+  const totpSecret = 'JBSWY3DPEHPK3PXP'
+  data.entries.push(
+    newEntry('login', {
+      title: 'GitHub',
+      username: 'daniel',
+      password: 'abc123',
+      totp: totpSecret,
+    }),
+  )
 
   const sealed = sealVault(data, vaultKey, { ...kdf, t: 1, m: 8192 })
+  assert.equal(JSON.stringify(sealed).includes(totpSecret), false, 'TOTP secret is not in the sealed envelope')
   const opened = openVault(sealed, vaultKey)
   assert.equal(opened.entries.length, 1)
   assert.equal(opened.entries[0]?.title, 'GitHub')
+  assert.equal(opened.entries[0]?.totp, totpSecret)
 
   // Header downgrade must break the AEAD tag because the header is the AAD.
   const downgraded = { ...sealed, kdf: { ...sealed.kdf, m: 16384 } }
@@ -162,8 +178,50 @@ test('base32 and TOTP match RFC 6238 test vectors', async () => {
 
   const at59 = await generateTotp(secret, 59_000)
   assert.equal(at59.code, '287082')
+  assert.equal('secret' in at59, false)
   const at1111 = await generateTotp(secret, 1111111109000)
   assert.equal(at1111.code, '081804')
+
+  const beforeBoundary = await generateTotp(secret, 29_999)
+  const atBoundary = await generateTotp(secret, 30_000)
+  assert.notEqual(beforeBoundary.code, atBoundary.code)
+  assert.equal(beforeBoundary.remaining, 1)
+  assert.equal(atBoundary.remaining, 30)
+
+  const raw = parseTotp('jbsw y3dp ehpk 3pxp')
+  assert.equal(raw?.secret, 'JBSWY3DPEHPK3PXP')
+  assert.equal(raw?.algorithm, 'SHA-1')
+  assert.equal(raw?.digits, 6)
+  assert.equal(raw?.period, 30)
+
+  // RFC 6238 SHA-256 seed "12345678901234567890123456789012".
+  const sha256 = parseTotp(
+    'otpauth://totp/GitHub:octocat?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA&issuer=GitHub&algorithm=SHA256&digits=8&period=30',
+  )
+  assert.equal(sha256?.issuer, 'GitHub')
+  assert.equal(sha256?.account, 'octocat')
+  assert.equal(sha256?.algorithm, 'SHA-256')
+  assert.equal(sha256?.digits, 8)
+  const sha256At59 = await generateTotp(sha256!, 59_000)
+  assert.equal(sha256At59.code, '46119246')
+
+  // RFC 6238 SHA-512 seed "1234567890" repeated to 64 bytes.
+  const sha512 = await generateTotp(
+    {
+      secret:
+        'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNA',
+      algorithm: 'SHA-512',
+      digits: 8,
+      period: 30,
+    },
+    59_000,
+  )
+  assert.equal(sha512.code, '90693936')
+
+  assert.equal(parseTotp('not-base32!'), null)
+  assert.equal(parseTotp('otpauth://hotp/Test?secret=JBSWY3DPEHPK3PXP'), null)
+  assert.equal(parseTotp('otpauth://totp/Test?secret=JBSWY3DPEHPK3PXP&digits=7'), null)
+  assert.equal(parseTotp('otpauth://totp/Test?secret=JBSWY3DPEHPK3PXP&algorithm=MD5'), null)
 })
 
 test('entry search, sorting and validation', () => {

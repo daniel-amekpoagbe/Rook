@@ -7,6 +7,7 @@ import {
   type GeneratorOptions,
 } from '~/lib/generator'
 import type { Entry, EntryType } from '~/lib/vault'
+import { parseTotp } from '~/lib/totp'
 import { Icon, Modal, StrengthMeter, cx, useCopyToClipboard } from './ui'
 
 export const TYPE_META: Record<EntryType, { label: string; icon: string }> = {
@@ -49,11 +50,17 @@ function PasswordInput({
   value,
   onChange,
   name,
+  autoComplete = 'new-password',
+  placeholder,
+  revealLabel = 'password',
 }: {
   id: string
   value: string
   onChange: (value: string) => void
   name: string
+  autoComplete?: string
+  placeholder?: string
+  revealLabel?: string
 }) {
   const [visible, setVisible] = useState(false)
   return (
@@ -65,15 +72,16 @@ function PasswordInput({
         type={visible ? 'text' : 'password'}
         value={value}
         onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
         spellCheck={false}
         autoCapitalize="none"
-        autoComplete="new-password"
+        autoComplete={autoComplete}
       />
       <button
         type="button"
         onClick={() => setVisible((prev) => !prev)}
         className="absolute top-1/2 right-0.5 flex size-8 -translate-y-1/2 items-center justify-center rounded-md text-faint hover:bg-surface-3 hover:text-ink"
-        aria-label={visible ? 'Hide password' : 'Show password'}
+        aria-label={visible ? `Hide ${revealLabel}` : `Show ${revealLabel}`}
         tabIndex={-1}
       >
         <Icon name={visible ? 'eyeOff' : 'eye'} size={14} />
@@ -253,6 +261,7 @@ export function EntryForm({
   const [draft, setDraft] = useState<Entry>(entry)
   const [tagText, setTagText] = useState(entry.tags.join(', '))
   const [generatorOpen, setGeneratorOpen] = useState(false)
+  const [totpError, setTotpError] = useState<string | null>(null)
 
   const set = <K extends keyof Entry>(key: K, value: Entry[K]) =>
     setDraft((prev) => ({ ...prev, [key]: value }))
@@ -269,6 +278,11 @@ export function EntryForm({
   function submit() {
     const title = draft.title.trim()
     if (!title) return
+    if (draft.type === 'login' && draft.totp?.trim() && !parseTotp(draft.totp)) {
+      setTotpError('Enter a valid base32 secret or otpauth:// URI.')
+      return
+    }
+    setTotpError(null)
     onSave({
       ...draft,
       title,
@@ -400,17 +414,27 @@ export function EntryForm({
                   />
                 </div>
                 <div>
-                  <Label htmlFor="entry-totp">One-time password secret</Label>
-                  <input
+                  <Label htmlFor="entry-totp">Authenticator secret</Label>
+                  <PasswordInput
                     id="entry-totp"
-                    className="field font-mono text-[12.5px]"
+                    name="totp"
                     value={draft.totp ?? ''}
-                    onChange={(event) => set('totp', event.target.value)}
+                    onChange={(value) => {
+                      set('totp', value)
+                      setTotpError(null)
+                    }}
                     placeholder="e.g. JBSWY3DPEHPK3PXP"
-                    autoCapitalize="characters"
-                    spellCheck={false}
+                    autoComplete="off"
+                    revealLabel="authenticator secret"
                   />
-                  <p className="mt-1 text-[11px] text-faint">Base32 secret from your provider, or an otpauth:// URI.</p>
+                  {totpError ? (
+                    <p className="mt-1 text-[11px] text-danger">{totpError}</p>
+                  ) : (
+                    <p className="mt-1 text-[11px] text-faint">
+                      Base32 secret from your provider, or an otpauth:// URI. The secret is encrypted
+                      with the rest of this item.
+                    </p>
+                  )}
                 </div>
               </div>
             </Section>

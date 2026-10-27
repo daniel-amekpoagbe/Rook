@@ -1,4 +1,5 @@
 import { hostOf, newEntry, type Entry, type EntryType } from './vault'
+import { parseTotp } from './totp'
 
 export type ImportSource = 'chrome' | '1password' | 'bitwarden' | 'rook'
 
@@ -125,14 +126,26 @@ function splitTags(value: string | undefined, separator: 'space' | 'list'): stri
 }
 
 function totpSecret(value: string | undefined): string | undefined {
-  const raw = clean(value, 200)
+  const raw = value?.trim()
   if (!raw) return undefined
-  if (!raw.toLowerCase().startsWith('otpauth://')) return raw
-  try {
-    return clean(new URL(raw).searchParams.get('secret') ?? undefined, 200)
-  } catch {
-    return undefined
+  if (!raw.toLowerCase().startsWith('otpauth://')) return clean(raw, 200)
+
+  const config = parseTotp(raw)
+  if (!config) return undefined
+  if (config.algorithm === 'SHA-1' && config.digits === 6 && config.period === 30) {
+    return config.secret
   }
+
+  // Preserve non-default algorithm/digit/period settings in a compact URI so
+  // an imported SHA-256 or 8-digit account does not silently generate the
+  // wrong code. The secret is still only stored inside the encrypted vault.
+  const params = new URLSearchParams({ secret: config.secret })
+  if (config.algorithm !== 'SHA-1') params.set('algorithm', config.algorithm)
+  if (config.digits !== 6) params.set('digits', String(config.digits))
+  if (config.period !== 30) params.set('period', String(config.period))
+  const label = encodeURIComponent(config.account ?? 'Rook')
+  const compact = `otpauth://totp/${label}?${params.toString()}`
+  return compact.length <= 200 ? compact : config.secret
 }
 
 function mapType(value: string | undefined): EntryType | null {

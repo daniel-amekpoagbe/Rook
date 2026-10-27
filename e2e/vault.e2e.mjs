@@ -2,6 +2,7 @@ import { BASE, artifactPath, launchBrowser } from './helpers.mjs'
 
 const HANDLE = process.env.HANDLE ?? `e2e.${Date.now().toString().slice(-6)}@example.com`
 const MASTER = 'mango-otter-vinyl-harbor-cobalt'
+const TOTP_SECRET = 'JBSWY3DPEHPK3PXP'
 
 const t0 = Date.now()
 const log = (...args) => console.log(`• [${((Date.now() - t0) / 1000).toFixed(1)}s]`, ...args)
@@ -11,8 +12,13 @@ const context = await browser.newContext({ viewport: { width: 1280, height: 800 
 const page = await context.newPage()
 
 const consoleErrors = []
+const requestBodies = []
 page.on('console', (message) => { if (message.type() === 'error') consoleErrors.push(message.text()) })
 page.on('pageerror', (error) => consoleErrors.push(`pageerror: ${error.message}`))
+page.on('request', (request) => {
+  const body = request.postData()
+  if (body) requestBodies.push(body)
+})
 page.on('response', (r) => { if (r.status() >= 400) console.log('  ✗ response', r.status(), r.request().method(), r.url().slice(0, 120)) })
 
 try {
@@ -56,6 +62,37 @@ try {
   log('audit flags the missing 2FA')
   await page.keyboard.press('Escape')
   await page.waitForTimeout(300)
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click()
+  await page.waitForSelector('input[name="totp"]', { timeout: 10000 })
+  await page.fill('input[name="totp"]', TOTP_SECRET)
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  await page.waitForSelector('[data-testid="totp-code"]', { timeout: 10000 })
+  const detailCode = (await page.locator('[data-testid="totp-code"]').first().innerText()).trim()
+  if (!/^\d{3} \d{3}$/.test(detailCode)) throw new Error(`unexpected TOTP code: ${detailCode}`)
+  if ((await page.content()).includes(TOTP_SECRET)) {
+    throw new Error('plaintext authenticator secret is in the DOM')
+  }
+  log('authenticator secret saved and a live code rendered')
+
+  await page.getByRole('button', { name: /Authenticator/ }).click()
+  const authenticator = page.getByRole('dialog', { name: 'Authenticator' })
+  await authenticator.waitFor({ timeout: 10000 })
+  await authenticator.locator('[data-testid="authenticator-code"]').first().waitFor({ timeout: 10000 })
+  const modalCode = (
+    await authenticator.locator('[data-testid="authenticator-code"]').first().innerText()
+  ).trim()
+  if (!/^\d{3} \d{3}$/.test(modalCode)) throw new Error(`unexpected authenticator code: ${modalCode}`)
+  if ((await page.content()).includes(TOTP_SECRET)) {
+    throw new Error('plaintext authenticator secret is in the authenticator dialog')
+  }
+  if (requestBodies.some((body) => body.includes(TOTP_SECRET))) {
+    throw new Error('plaintext authenticator secret reached the network')
+  }
+  log('authenticator dialog shows the code without exposing the secret')
+  await page.screenshot({ path: artifactPath('e2e-authenticator.png') })
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(300)
   await page.screenshot({ path: artifactPath('e2e-vault.png') })
 
   await page.reload({ waitUntil: 'networkidle' })
@@ -73,6 +110,13 @@ try {
   await page.waitForSelector('text=Select an item', { timeout: 180000 })
   await page.waitForSelector('text=GitHub', { timeout: 10000 })
   log('correct password decrypts the persisted vault')
+
+  await page.getByText('GitHub', { exact: true }).click()
+  await page.waitForSelector('[data-testid="totp-code"]', { timeout: 10000 })
+  if ((await page.content()).includes(TOTP_SECRET)) {
+    throw new Error('plaintext authenticator secret is in the DOM after unlock')
+  }
+  log('authenticator secret survives lock/unlock without appearing in the DOM')
 
   await page.getByRole('button', { name: 'New item' }).click()
   await page.getByRole('menuitem', { name: 'Login' }).click()

@@ -40,7 +40,7 @@ An original implementation, not a clone: the master password is stretched with A
 - Optional WebAuthn passkey second factor for Rook's own sign-in. Once a passkey is registered, the master password alone cannot start a session. Adding the first passkey shows a recovery code once; removing the last passkey turns the factor off and discards the code.
 - Passkeys require HTTPS or `localhost` and are bound to their origin. The passkey authenticates the server session only; the master password still derives the vault key. Rook is not a passkey provider for other websites; that needs a browser extension and is out of scope.
 - Session cookie holds a random token; the database stores only its SHA-256. Eight failed attempts per fifteen minutes.
-- Password generator, entropy estimate, TOTP (RFC 6238), audit with optional HIBP range check.
+- Password generator, entropy estimate, an authenticator view with RFC 6238 TOTP codes (SHA-1/256/512, 6 or 8 digits), audit with optional HIBP range check. TOTP secrets stay in the encrypted vault and codes are generated in the browser.
 - Local import from Chrome CSV, 1Password CSV, Bitwarden JSON/CSV, and Rook CSV, with a preview and duplicate detection.
 - Encrypted backups contain the full vault, including item history and trash. CSV export is plaintext and carries an explicit warning.
 - Single vault per account. No master-password recovery; a passkey recovery code only bypasses the passkey second factor. No real-time multi-device sync; concurrent saves reconcile through explicit conflict choices. Handles may be email addresses.
@@ -60,6 +60,7 @@ An original implementation, not a clone: the master password is stretched with A
 
 - Working application at `src/`, with passing unit tests (including the import parsers, history, trash, recipient-share envelopes, and passkey helpers) and Playwright end-to-end flows.
 - A passkey end-to-end flow exercises registration, required second-factor unlock, recovery-code unlock, and removing the last passkey using Chromium's virtual authenticator.
+- The vault end-to-end flow creates an authenticator-backed login, renders a live code in the detail view and Authenticator dialog, and verifies the plaintext TOTP secret never appears in the DOM or captured request bodies.
 - A two-account sharing flow verifies ciphertext-only `recipient_shares`, recipient inbox decryption, per-recipient revocation, expiry cleanup, master-password rotation, and legacy-link read compatibility. Long, password-only, and mobile layouts are covered separately.
 - `README.md` documents the architecture, sharing key hierarchy, limits, passkey scope, Vercel/Supabase deployment, and threat model.
 - No real user data, testimonials, benchmarks, or press. Any demo entries are synthetic.

@@ -589,7 +589,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           <div className="mt-3 rounded-lg border border-warn/25 bg-warn/5 px-3 py-2.5">
             <p className="text-[11.5px] leading-relaxed text-muted">
               <span className="font-medium text-ink">Plain-text export.</span> The CSV contains every password
-              unencrypted. Store it only somewhere you trust, and delete it after use.
+              and authenticator secret unencrypted. Store it only somewhere you trust, and delete it
+              after use.
             </p>
             <div className="mt-2 flex gap-2">
               <button type="button" className="btn-secondary h-8 px-2.5 text-[12px]" onClick={() => setPendingCsv(false)}>

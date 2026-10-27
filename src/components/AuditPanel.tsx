@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { scorePassword } from '~/lib/strength'
 import { daysSince } from './ui'
 import { hostOf, type Entry } from '~/lib/vault'
+import { parseTotp } from '~/lib/totp'
 import { Icon, Sheet, cx } from './ui'
 import { TYPE_META } from './EntryEditor'
 
@@ -29,6 +30,10 @@ interface Flag {
   entry: Entry
   reasons: string[]
   severity: 'high' | 'medium' | 'low'
+}
+
+function hasValidTotp(entry: Entry): boolean {
+  return Boolean(entry.totp && parseTotp(entry.totp))
 }
 
 export function AuditModal({ open, onClose, entries }: { open: boolean; onClose: () => void; entries: Entry[] }) {
@@ -72,7 +77,7 @@ export function AuditModal({ open, onClose, entries }: { open: boolean; onClose:
         if (severity === 'low') severity = 'medium'
       }
 
-      if (entry.type === 'login' && entry.password && !entry.totp) {
+      if (entry.type === 'login' && entry.password && !hasValidTotp(entry)) {
         reasons.push('No one-time password set up')
       }
 
@@ -90,7 +95,7 @@ export function AuditModal({ open, onClose, entries }: { open: boolean; onClose:
       weak: withPassword.filter((entry) => scorePassword(entry.password!).score <= 1).length,
       reused: flags.filter((flag) => flag.reasons.some((reason) => reason.startsWith('Reused'))).length,
       breached: breaches ? flags.filter((flag) => flag.reasons.includes('Found in a known breach')).length : null,
-      without2fa: entries.filter((entry) => entry.type === 'login' && entry.password && !entry.totp).length,
+      without2fa: entries.filter((entry) => entry.type === 'login' && entry.password && !hasValidTotp(entry)).length,
     }
   }, [entries, flags, breaches])
 

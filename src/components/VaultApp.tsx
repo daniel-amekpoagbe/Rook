@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useVault, type ConflictChoice } from '~/lib/vault-context'
-import { generateTotp, isValidTotpSecret, type TotpResult } from '~/lib/totp'
+import { parseTotp } from '~/lib/totp'
 import {
   hostOf,
   matchesQuery,
@@ -16,10 +16,12 @@ import {
   type EntryType,
 } from '~/lib/vault'
 import { AuditModal } from './AuditPanel'
+import { AuthenticatorModal } from './AuthenticatorModal'
 import { EntryForm, GeneratorModal, TYPE_META, newDraft } from './EntryEditor'
 import { ReceivedSharesDialog } from './ReceivedSharesDialog'
 import { SettingsModal } from './SettingsPanel'
 import { ShareDialog } from './ShareDialog'
+import { TotpBlock } from './TotpCode'
 import { Icon, Modal, ThemeToggle, cx, timeAgo, useCopyToClipboard } from './ui'
 import { RookMark } from './RookMark'
 import { BrandIcon, brandCssVars, brandForEntry } from './BrandIcon'
@@ -128,71 +130,6 @@ function FieldRow({
         >
           <Icon name={copied ? 'check' : 'copy'} size={14} className={copied ? 'text-success' : undefined} />
         </button>
-      </div>
-    </div>
-  )
-}
-
-function TotpBlock({ secret }: { secret: string }) {
-  const [state, setState] = useState<TotpResult | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const { copied, copy } = useCopyToClipboard()
-
-  useEffect(() => {
-    if (!isValidTotpSecret(secret)) {
-      setError('Invalid secret')
-      setState(null)
-      return
-    }
-    let active = true
-    const tick = async () => {
-      try {
-        const result = await generateTotp(secret)
-        if (active) {
-          setState(result)
-          setError(null)
-        }
-      } catch {
-        if (active) setError('Invalid secret')
-      }
-    }
-    void tick()
-    const id = setInterval(() => void tick(), 1000)
-    return () => {
-      active = false
-      clearInterval(id)
-    }
-  }, [secret])
-
-  if (error) return <p className="text-[12px] text-danger">One-time password secret is not valid base32.</p>
-  if (!state) return <p className="text-[12px] text-muted">Generating code…</p>
-
-  return (
-    <div>
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <div className="text-[11.5px] font-medium text-muted">One-time code</div>
-          <div className="mt-0.5 font-mono text-[22px] leading-none tracking-[0.14em] text-ink">
-            {state.code.slice(0, 3)} {state.code.slice(3)}
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="font-mono text-[11px] text-faint">{state.remaining}s</span>
-          <button
-            type="button"
-            className="icon-btn"
-            onClick={() => copy(state.code)}
-            aria-label="Copy code"
-          >
-            <Icon name={copied ? 'check' : 'copy'} size={15} className={copied ? 'text-success' : undefined} />
-          </button>
-        </div>
-      </div>
-      <div className="mt-3 h-0.5 overflow-hidden rounded-full bg-surface-3">
-        <div
-          className="h-full rounded-full bg-faint transition-[width] duration-1000 ease-linear"
-          style={{ width: `${(1 - state.progress) * 100}%` }}
-        />
       </div>
     </div>
   )
@@ -496,6 +433,7 @@ export function VaultApp() {
   const [editing, setEditing] = useState<Entry | null>(null)
   const [newMenuOpen, setNewMenuOpen] = useState(false)
   const [auditOpen, setAuditOpen] = useState(false)
+  const [authenticatorOpen, setAuthenticatorOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [generatorOpen, setGeneratorOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<Entry | null>(null)
@@ -552,6 +490,14 @@ export function VaultApp() {
       trash: trash.length,
     } as Record<string, number>
   }, [entries, trash])
+
+  const authenticatorCount = useMemo(
+    () =>
+      entries.filter(
+        (entry) => entry.type === 'login' && Boolean(entry.totp && parseTotp(entry.totp)),
+      ).length,
+    [entries],
+  )
 
   const selected = (filter === 'trash' ? trash : entries).find((entry) => entry.id === selectedId) ?? null
   const history = selected && filter !== 'trash' ? (data?.history[selected.id] ?? []) : []
@@ -729,6 +675,23 @@ export function VaultApp() {
 
           <NavGroupLabel>Tools</NavGroupLabel>
           <div className="space-y-0.5">
+            <button
+              type="button"
+              className="nav-item"
+              onClick={() => {
+                setAuthenticatorOpen(true)
+                setRailOpen(false)
+              }}
+              aria-label={`Authenticator, ${authenticatorCount} ${authenticatorCount === 1 ? 'code' : 'codes'}`}
+            >
+              <Icon name="authenticator" size={16} className="text-faint" />
+              <span className="flex-1 text-left">Authenticator</span>
+              {authenticatorCount > 0 && (
+                <span className="font-mono text-[10.5px] text-faint tabular-nums">
+                  {authenticatorCount}
+                </span>
+              )}
+            </button>
             <button
               type="button"
               className="nav-item"
@@ -1105,6 +1068,19 @@ export function VaultApp() {
       </main>
 
       <AuditModal open={auditOpen} onClose={() => setAuditOpen(false)} entries={entries} />
+      {authenticatorOpen && (
+        <AuthenticatorModal
+          entries={entries}
+          onClose={() => setAuthenticatorOpen(false)}
+          onOpenEntry={(entry) => {
+            setAuthenticatorOpen(false)
+            setEditing(null)
+            setFilter('all')
+            setQuery('')
+            setSelectedId(entry.id)
+          }}
+        />
+      )}
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <GeneratorModal open={generatorOpen} onClose={() => setGeneratorOpen(false)} />
       {shareTarget && (

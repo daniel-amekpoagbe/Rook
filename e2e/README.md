@@ -1,8 +1,9 @@
 # Browser end-to-end tests
 
 These flows run against a real Rook server with a disposable SQLite database.
-They cover registration and unlock, import, history/trash, recipient-bound
-sharing, mobile sharing, conflict recovery, and a WebAuthn passkey flow.
+They cover registration and unlock, import, history/trash, the authenticator
+view, recipient-bound sharing, mobile sharing, conflict recovery, and a WebAuthn
+passkey flow.
 
 ## Run the whole suite
 
@@ -24,6 +25,14 @@ npm run test:e2e:only
 `DB_PATH` is used by the sharing flows to inspect `recipient_shares` and
 `user_identities` for ciphertext-only storage, the recipient envelope, and
 expiry cleanup.
+
+## Authenticator flow
+
+The main vault flow adds a TOTP secret to a login, checks that a live code is
+rendered in the detail view, opens the Authenticator dialog, and verifies the
+same account appears there. It also checks that the plaintext secret never
+appears in the page DOM or in any captured request body, before and after a
+lock/unlock cycle.
 
 ## Sharing flow
 

@@ -186,8 +186,10 @@ Vault
   cannot silently resurrect the item
 - Full-text search across title, username, URL, notes, and tags
 - Filters by type, favorites, and trash
-- Live TOTP codes (RFC 6238, SHA-1/6 digits/30 s) with expiry progress
-- Copy buttons everywhere; password masking with explicit reveal
+- Authenticator view for every login: live RFC 6238 codes (SHA-1/256/512, 6 or 8
+  digits, 30 s by default), countdown rings, search, and copy. Secrets stay inside the
+  encrypted vault; codes are generated in the browser and never sent to the server
+- Copy buttons everywhere; password and authenticator-secret masking with explicit reveal
 
 Sharing
 
@@ -223,6 +225,8 @@ Security
   sharing identity private key is re-wrapped)
 - WebAuthn passkey second factor for Rook's own sign-in, required once a passkey is registered
 - One-time recovery code for the passkey second factor, shown once and stored only as a hash
+- Authenticator secrets stay inside the encrypted vault; TOTP codes are generated in the
+  browser with WebCrypto and never sent to the server
 - Idle auto-lock (1/5/15/30/60 min), in-memory key wiping
 - httpOnly session cookie; only its SHA-256 is stored
 - Login rate limiting and deterministic fake salts for unknown handles
@@ -244,7 +248,8 @@ Data
 - Password generator (length, character classes, ambiguous-character filter, entropy readout)
 - Encrypted backup export (needs the master password; new backups use the `rook.vault`
   format, and pre-rename `keynest.vault` backups still import)
-- CSV export for portability (with an explicit plaintext warning)
+- CSV export for portability, including passwords and authenticator secrets (with an explicit
+  plaintext warning)
 - Encrypted backup import, merged by item id, including trash and version history
 - Import from Chrome CSV, 1Password CSV, Bitwarden JSON/CSV, and Rook CSV; parsed locally,
   with duplicate detection and a preview before anything is saved
@@ -373,7 +378,7 @@ src/lib/recipient-share.ts P-256 identity keys, encrypted private-key storage, r
 src/lib/import.ts          Chrome/1Password/Bitwarden/Rook parsers and duplicate fingerprints
 src/lib/generator.ts       unbiased CSPRNG password generation + entropy
 src/lib/strength.ts        entropy estimator with sequence/repeat/common penalties
-src/lib/totp.ts            base32 + RFC 6238 via WebCrypto
+src/lib/totp.ts            base32, otpauth:// parsing, RFC 6238 via WebCrypto
 src/lib/passkeys.ts        passkey metadata type and recovery-code formatting
 src/lib/webauthn-origin.ts pure WebAuthn origin/RP ID resolver for proxies and overrides
 src/server/api.ts          server functions (register, login, kdf, pull/push, rotate, identity, recipient shares, legacy share read, passkeys)
@@ -382,7 +387,7 @@ src/server/sql.server.ts   async SQL surface, SQLite/PostgreSQL drivers, migrati
 src/server/db.server.ts    users, vaults, sessions, shares, passkeys, and atomic re-key queries
 src/server/webauthn.server.ts  WebAuthn ceremonies, RP/origin handling, recovery codes
 src/server/session.server.ts  cookie sessions, constant-time compare
-src/components/            lock screen, vault shell, editor, generator, audit, settings, share dialog, received-shares inbox
+src/components/            lock screen, vault shell, editor, authenticator, generator, audit, settings, share dialog, received-shares inbox
 src/routes/__root.tsx      document shell; VaultProvider lives above the router
 src/routes/share.$shareId.tsx  legacy public page for an unexpired bearer link
 landing/                   static GitHub Pages landing page

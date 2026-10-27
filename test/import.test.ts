@@ -37,6 +37,20 @@ test('imports a 1Password CSV with TOTP, tags, and favorite state', () => {
   assert.equal(entry?.notes, 'Dev account')
 })
 
+test('import preserves non-default authenticator URI settings', () => {
+  const csv = [
+    'Title,Url,Username,Password,OTPAuth',
+    'GitHub,https://github.com,octocat,secret,otpauth://totp/GitHub:octocat?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA&issuer=GitHub&algorithm=SHA256&digits=8',
+  ].join('\n')
+
+  const result = parseImportText(csv)
+  const entry = result.entries[0]
+  assert.equal(
+    entry?.totp,
+    'otpauth://totp/octocat?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA&algorithm=SHA-256&digits=8',
+  )
+})
+
 test('imports Bitwarden JSON logins, notes, cards, and identities', () => {
   const json = JSON.stringify({
     encrypted: false,
