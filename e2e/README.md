@@ -2,8 +2,7 @@
 
 These flows run against a real Rook server with a disposable SQLite database.
 They cover registration and unlock, import, history/trash, recipient-bound
-sharing, encrypted attachments, mobile sharing, conflict recovery, and a
-WebAuthn passkey flow.
+sharing, mobile sharing, conflict recovery, and a WebAuthn passkey flow.
 
 ## Run the whole suite
 
@@ -24,8 +23,7 @@ npm run test:e2e:only
 
 `DB_PATH` is used by the sharing flows to inspect `recipient_shares` and
 `user_identities` for ciphertext-only storage, the recipient envelope, and
-expiry cleanup, and by the attachment flow to check that the server never sees
-the file name or plaintext and that removing a file deletes its blob.
+expiry cleanup.
 
 ## Sharing flow
 
@@ -75,15 +73,6 @@ browser extension is involved.
 A passkey is bound to its origin. A credential registered at
 `http://localhost:3100` will not work at `http://127.0.0.1:3100`. Use the same
 address each time.
-
-## Attachment flow
-
-The attachment flow uploads a 1 MiB text file to a login. It then checks the
-SQLite attachment row for ciphertext only, downloads and byte-compares the
-decrypted file, reloads and unlocks to confirm the metadata persisted, checks
-the share dialog warning, removes the file, and verifies the server blob is
-gone. It uses the normal `127.0.0.1` origin and does not need a virtual
-authenticator.
 
 ## Local browser selection
 

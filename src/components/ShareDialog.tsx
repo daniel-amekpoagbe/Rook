@@ -197,16 +197,6 @@ export function ShareDialog({
           <span className="chip">3 days</span>
         </div>
 
-        {entry.attachments.length > 0 && (
-          <div className="flex items-start gap-2 rounded-lg border border-warn/25 bg-warn/5 px-3 py-2 text-[11px] leading-relaxed text-muted">
-            <Icon name="alert" size={13} className="mt-0.5 shrink-0 text-warn" />
-            <span>
-              Attachments are not included. This login&apos;s title, username, password, and
-              website are shared.
-            </span>
-          </div>
-        )}
-
         <div>
           <label htmlFor="recipient-handle" className="label">
             Recipient handle

@@ -199,7 +199,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     download(`rook-${handle ?? 'vault'}-${new Date().toISOString().slice(0, 10)}.knv.json`, JSON.stringify(blob, null, 2))
     setMessage({
       tone: 'ok',
-      text: 'Encrypted backup downloaded. It needs your master password to open. Attachment file bytes are not included.',
+      text: 'Encrypted backup downloaded. It needs your master password to open.',
     })
   }
 
@@ -581,9 +581,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         </div>
 
         <p className="mt-2 text-[11px] leading-relaxed text-faint">
-          Encrypted backups include attachment names and keys, but not the file bytes. Download important
-          files separately. On import, attachment references are kept only when the encrypted file still
-          exists in this account.
+          Encrypted backups contain the full vault, including item history and trash. Import merges
+          items by id and keeps the newest version of each item.
         </p>
 
         {pendingCsv && (

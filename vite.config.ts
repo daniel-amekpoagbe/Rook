@@ -17,6 +17,8 @@ export default defineConfig({
       srcDirectory: 'src',
     }),
     viteReact(),
-    nitro(),
+    // Vercel sets VERCEL=1 during its build. Local builds keep the normal
+    // Node server output used by `npm start` and the browser test runner.
+    nitro({ preset: process.env.VERCEL ? 'vercel' : 'node-server' }),
   ],
 })

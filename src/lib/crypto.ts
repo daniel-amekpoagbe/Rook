@@ -99,7 +99,7 @@ export interface SealedBlob {
   ciphertext: string
 }
 
-/** Encrypt arbitrary bytes. Used for attachment blobs as well as text payloads. */
+/** Encrypt arbitrary bytes for encrypted envelopes and text payloads. */
 export function encryptBytes(key: Uint8Array, plaintext: Uint8Array, aad: string): SealedBlob {
   const nonce = randomBytes(NONCE_BYTES)
   const ciphertext = xchacha20poly1305(key, nonce, new TextEncoder().encode(aad)).encrypt(plaintext)

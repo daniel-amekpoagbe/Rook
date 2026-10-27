@@ -1,13 +1,11 @@
 import { z } from 'zod'
-import { attachmentSchema, MAX_ATTACHMENTS_PER_ENTRY } from './attachments'
 import { decrypt, encrypt, type KdfConfig, type SealedBlob } from './crypto'
 
 export const VAULT_FORMAT = 'rook.vault'
 /** Pre-rename backups remain readable; new saves use `rook.vault`. */
 export const LEGACY_VAULT_FORMAT = 'keynest.vault'
 export const VAULT_FORMAT_VERSION = 1
-/** Version 5 adds encrypted-file attachment metadata to entries. */
-export const VAULT_DATA_VERSION = 5
+export const VAULT_DATA_VERSION = 6
 export const MAX_ENTRIES = 10000
 export const MAX_HISTORY_VERSIONS = 20
 export const MAX_TRASH_ITEMS = 1000
@@ -49,11 +47,6 @@ export const entrySchema = z.object({
     .optional(),
   tags: z.array(z.string().max(50)).max(30).default([]),
   favorite: z.boolean().default(false),
-  /**
-   * Attachment metadata is encrypted with the vault. The file bytes live in a
-   * separate server row and are encrypted with the per-file key stored here.
-   */
-  attachments: z.array(attachmentSchema).max(MAX_ATTACHMENTS_PER_ENTRY).default([]),
   createdAt: z.string(),
   updatedAt: z.string(),
   /** Set only while an item is in the trash. */
@@ -83,9 +76,21 @@ export const historyVaultDataSchema = z.object({
   history: z.record(z.string(), z.array(entrySchema).max(MAX_HISTORY_VERSIONS)).default({}),
 })
 
-/** Version 4 is the pre-attachment schema; entries gain `attachments` on read. */
+/** Version 4 is an older vault schema. Unknown fields are discarded. */
 export const v4VaultDataSchema = z.object({
   version: z.literal(4),
+  entries: z.array(entrySchema).max(MAX_ENTRIES),
+  trash: z.array(entrySchema).max(MAX_TRASH_ITEMS).default([]),
+  history: z.record(z.string(), z.array(entrySchema).max(MAX_HISTORY_VERSIONS)).default({}),
+  tombstones: z.array(tombstoneSchema).max(MAX_TOMBSTONES).default([]),
+})
+
+/**
+ * Version 5 added encrypted attachment metadata. The attachment feature is
+ * gone, so the metadata is discarded and the vault is rewritten as version 6.
+ */
+export const v5VaultDataSchema = z.object({
+  version: z.literal(5),
   entries: z.array(entrySchema).max(MAX_ENTRIES),
   trash: z.array(entrySchema).max(MAX_TRASH_ITEMS).default([]),
   history: z.record(z.string(), z.array(entrySchema).max(MAX_HISTORY_VERSIONS)).default({}),
@@ -133,13 +138,24 @@ export function emptyVault(): VaultData {
 }
 
 /**
- * Older vaults are migrated on read: v2 gains history and trash, v3 gains
- * permanent-delete tombstones, and v4 entries gain an empty attachment list.
- * The next save writes the current version.
+ * Older vaults are migrated on read: v2 gains history and trash, v3/v4 gain
+ * permanent-delete tombstones, and v5 drops legacy attachment metadata. The
+ * next save writes the current version.
  */
 export function parseVaultData(value: unknown): VaultData {
   const current = vaultDataSchema.safeParse(value)
   if (current.success) return current.data
+
+  const v5 = v5VaultDataSchema.safeParse(value)
+  if (v5.success) {
+    return {
+      version: VAULT_DATA_VERSION,
+      entries: v5.data.entries,
+      trash: v5.data.trash,
+      history: v5.data.history,
+      tombstones: v5.data.tombstones,
+    }
+  }
 
   const v4 = v4VaultDataSchema.safeParse(value)
   if (v4.success) {
@@ -239,7 +255,6 @@ export function newEntry(
     identity: fields.identity,
     tags: [],
     favorite: false,
-    attachments: [],
     createdAt: now,
     updatedAt: now,
   }
@@ -287,16 +302,11 @@ function activeCopy(entry: Entry): Entry {
   return active
 }
 
-/**
- * Attachment metadata is deliberately not versioned. History restores
- * credential fields, not file references, so an old version can never point at
- * a blob the user already removed.
- */
 function historyCopy(entry: Entry): Entry {
-  return { ...activeCopy(entry), attachments: [] }
+  return activeCopy(entry)
 }
 
-/** Favorite, attachment, and timestamp changes are not history-worthy content. */
+/** Favorite and timestamp changes are not history-worthy content. */
 function entryContentKey(entry: Entry): string {
   return JSON.stringify({
     type: entry.type,
@@ -417,7 +427,7 @@ export function restoreVersion(
     ...data,
     entries: data.entries.map((item) =>
       item.id === entryId
-        ? { ...touch(activeCopy(version)), attachments: current.attachments }
+        ? touch(activeCopy(version))
         : item,
     ),
     history: recordHistory(data.history, current),
@@ -587,7 +597,6 @@ export function matchesQuery(entry: Entry, query: string): boolean {
     entry.url,
     entry.notes,
     ...entry.tags,
-    ...entry.attachments.map((attachment) => attachment.name),
   ]
     .filter(Boolean)
     .join(' ')

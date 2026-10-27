@@ -15,7 +15,6 @@ import {
   type Entry,
   type EntryType,
 } from '~/lib/vault'
-import { AttachmentsSection } from './AttachmentsSection'
 import { AuditModal } from './AuditPanel'
 import { EntryForm, GeneratorModal, TYPE_META, newDraft } from './EntryEditor'
 import { ReceivedSharesDialog } from './ReceivedSharesDialog'
@@ -408,8 +407,6 @@ function EntryDetail({
               </div>
             )}
 
-            <AttachmentsSection key={entry.id} entry={entry} readOnly={trashed} />
-
             {!trashed && history.length > 0 && (
               <div className="mt-6">
                 <div className="flex items-baseline justify-between gap-3">
@@ -561,16 +558,7 @@ export function VaultApp() {
   const activeFilter = FILTERS.find((item) => item.value === filter) ?? FILTERS[0]
 
   function saveEntry(entry: Entry, record = true) {
-    mutate((current) => {
-      // Files are managed in the detail view. A form opened before an upload
-      // finished must not overwrite the newest attachment list.
-      const existing = current.entries.find((item) => item.id === entry.id)
-      return upsertEntry(
-        current,
-        existing ? { ...entry, attachments: existing.attachments } : entry,
-        record,
-      )
-    })
+    mutate((current) => upsertEntry(current, entry, record))
   }
 
   function moveToTrash(id: string) {
@@ -1163,8 +1151,8 @@ export function VaultApp() {
         width="max-w-sm"
       >
         <p className="text-[13px] leading-relaxed text-muted">
-          <span className="font-medium text-ink">{deleteForeverTarget?.title}</span> will be removed permanently,
-          including its version history and encrypted attachments. This cannot be undone.
+          <span className="font-medium text-ink">{deleteForeverTarget?.title}</span> will be removed
+          permanently, including its version history. This cannot be undone.
         </p>
         <div className="mt-5 flex justify-end gap-2">
           <button type="button" className="btn-secondary" onClick={() => setDeleteForeverTarget(null)}>

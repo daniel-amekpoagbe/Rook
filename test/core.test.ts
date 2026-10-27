@@ -178,18 +178,6 @@ test('entry search, sorting and validation', () => {
   assert.ok(matchesQuery(github, 'github daniel'))
   assert.ok(matchesQuery(bank, 'zenith'))
   assert.ok(!matchesQuery(bank, 'github'))
-
-  github.attachments = [
-    {
-      id: 'file-1',
-      name: 'recovery-codes.txt',
-      size: 42,
-      type: 'text/plain',
-      key: 'unused-in-search',
-      createdAt: '2026-01-01T00:00:00.000Z',
-    },
-  ]
-  assert.ok(matchesQuery(github, 'recovery codes'), 'attachment names are searchable')
 })
 
 test('login avatars resolve familiar platform brands from URLs and titles', () => {

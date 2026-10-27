@@ -236,7 +236,6 @@ function emptyDraft(type: EntryType): Entry {
     title: '',
     tags: [],
     favorite: false,
-    attachments: [],
     createdAt: now,
     updatedAt: now,
   }

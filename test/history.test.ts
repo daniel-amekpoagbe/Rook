@@ -40,7 +40,6 @@ test('version 2 vaults migrate to the current schema on read', () => {
   assert.deepEqual(opened.trash, [])
   assert.deepEqual(opened.history, {})
   assert.deepEqual(opened.tombstones, [])
-  assert.deepEqual(opened.entries[0]?.attachments, [])
   assert.equal(opened.entries[0]?.title, 'Legacy login')
   assert.equal(opened.entries[0]?.password, 'legacy-secret')
 })
@@ -60,8 +59,52 @@ test('version 3 vaults gain permanent-delete tombstones on read', () => {
   const opened = openVault(sealed, key)
   assert.equal(opened.version, VAULT_DATA_VERSION)
   assert.deepEqual(opened.tombstones, [])
-  assert.deepEqual(opened.entries[0]?.attachments, [])
   assert.equal(opened.entries[0]?.title, 'Existing login')
+})
+
+test('version 5 vaults drop legacy attachment metadata on read', () => {
+  const key = new Uint8Array(32).fill(13)
+  const attachment = {
+    id: 'file-1',
+    name: 'recovery-codes.txt',
+    size: 42,
+    type: 'text/plain',
+    key: 'unused',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  }
+  const entry = {
+    ...newEntry('login', { title: 'Attachment-era login', password: 'secret' }),
+    attachments: [attachment],
+  }
+  const oldVersion = { ...entry, password: 'older-secret' }
+  const trashed = {
+    ...newEntry('note', { title: 'Trashed note' }),
+    deletedAt: '2026-01-02T00:00:00.000Z',
+    attachments: [attachment],
+  }
+  const v5Data = {
+    version: 5,
+    entries: [entry],
+    trash: [trashed],
+    history: { [entry.id]: [oldVersion] },
+    tombstones: [],
+  }
+  const sealed = {
+    format: 'rook.vault' as const,
+    version: 1 as const,
+    kdf: TEST_KDF,
+    updatedAt: new Date().toISOString(),
+    ...encrypt(key, JSON.stringify(v5Data), headerAad(TEST_KDF, 'rook.vault')),
+  }
+
+  const opened = openVault(sealed, key)
+  assert.equal(opened.version, VAULT_DATA_VERSION)
+  assert.equal(opened.entries[0]?.title, 'Attachment-era login')
+  assert.equal(opened.trash[0]?.title, 'Trashed note')
+  assert.equal(opened.history[entry.id]?.[0]?.password, 'older-secret')
+  assert.equal('attachments' in opened.entries[0]!, false)
+  assert.equal('attachments' in opened.trash[0]!, false)
+  assert.equal('attachments' in opened.history[entry.id]![0]!, false)
 })
 
 test('editing records the previous version, while favorite changes do not', () => {
