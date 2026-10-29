@@ -66,6 +66,10 @@ import {
 type Status = 'booting' | 'locked' | 'unlocked'
 type SyncState = 'idle' | 'saving' | 'saved' | 'conflict' | 'error'
 
+const SAVE_RETRY_BASE_MS = 1_500
+const SAVE_RETRY_MAX_MS = 30_000
+const SAVE_RETRY_LIMIT = 5
+
 export type ConflictChoice = 'mine' | 'server' | 'merge'
 
 export interface VaultConflict {
@@ -164,6 +168,16 @@ function isConflictError(error: unknown): boolean {
   return message === 'CONFLICT' || message.includes('CONFLICT')
 }
 
+function isRetryableSaveError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return (
+    message !== 'UNAUTHENTICATED' &&
+    message !== 'VAULT_MISSING' &&
+    message !== 'Vault is locked' &&
+    !message.includes('Vault is locked')
+  )
+}
+
 interface Secrets {
   masterKey: Uint8Array
   vaultKey: Uint8Array
@@ -209,6 +223,7 @@ interface VaultContextValue {
   mutate: (change: (data: VaultData) => VaultData) => void
   ensureIdentity: () => Promise<Identity>
   deleteEntryPermanently: (entryId: string) => Promise<void>
+  retrySave: () => void
   changeMasterPassword: (current: string, next: string) => Promise<void>
   exportBackup: () => EncryptedVault | null
   exportCsv: () => string | null
@@ -251,6 +266,16 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const identityRef = useRef<Identity | null>(null)
   const identityLoadRef = useRef<Promise<Identity> | null>(null)
   const identityGenerationRef = useRef(0)
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const retryAttemptRef = useRef(0)
+  const flushSavesRef = useRef<() => Promise<void>>(async () => {})
+
+  const clearSaveRetry = useCallback(() => {
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current)
+      retryTimerRef.current = null
+    }
+  }, [])
 
   const settleSaveWaiters = useCallback((error?: unknown) => {
     const waiters = saveWaitersRef.current
@@ -387,6 +412,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 
   const lock = useCallback(() => {
     clearPendingPasskey()
+    clearSaveRetry()
+    retryAttemptRef.current = 0
     settleSaveWaiters(new Error('Vault is locked'))
     pendingRef.current = null
     conflictRef.current = null
@@ -402,7 +429,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     setConflict(null)
     setStatus('locked')
     setSync('idle')
-  }, [clearPendingPasskey, settleSaveWaiters])
+  }, [clearPendingPasskey, clearSaveRetry, settleSaveWaiters])
 
   // Idle auto-lock
   useEffect(() => {
@@ -458,6 +485,17 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     setError(null)
   }, [])
 
+  const scheduleSaveRetry = useCallback(() => {
+    if (retryTimerRef.current || conflictRef.current || !pendingRef.current) return
+    if (retryAttemptRef.current >= SAVE_RETRY_LIMIT) return
+    const delay = Math.min(SAVE_RETRY_BASE_MS * 2 ** retryAttemptRef.current, SAVE_RETRY_MAX_MS)
+    retryAttemptRef.current += 1
+    retryTimerRef.current = setTimeout(() => {
+      retryTimerRef.current = null
+      void flushSavesRef.current()
+    }, delay)
+  }, [])
+
   /**
    * Saves are immediate, not debounced: an edit is already an explicit user action
    * (Save, delete, favorite), and a debounce window is a window for data loss.
@@ -492,6 +530,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
             },
           })
           versionRef.current = result.version
+          retryAttemptRef.current = 0
+          clearSaveRetry()
           setLastSyncedAt(result.updatedAt)
           setSync('saved')
         } catch (caught) {
@@ -499,6 +539,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
             // Keep the latest local snapshot. A mutation may have landed while
             // the rejected request was in flight, and that snapshot includes it.
             if (!pendingRef.current) pendingRef.current = next
+            retryAttemptRef.current = 0
+            clearSaveRetry()
             try {
               enterConflict(await pullRemoteVault())
             } catch (pullError) {
@@ -509,10 +551,13 @@ export function VaultProvider({ children }: { children: ReactNode }) {
             return
           }
 
-          pendingRef.current = null
+          // Keep the snapshot: the edit is still in this tab, and the retry
+          // loop below will try again with capped exponential backoff.
+          if (!pendingRef.current) pendingRef.current = next
           setSync('error')
           setError(friendlyError(caught))
           settleSaveWaiters(caught)
+          if (isRetryableSaveError(caught)) scheduleSaveRetry()
           return
         }
       }
@@ -520,16 +565,38 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     } finally {
       savingRef.current = false
     }
-  }, [enterConflict, pullRemoteVault, settleSaveWaiters])
+  }, [clearSaveRetry, enterConflict, pullRemoteVault, scheduleSaveRetry, settleSaveWaiters])
+
+  useEffect(() => {
+    flushSavesRef.current = flushSaves
+  }, [flushSaves])
 
   const queueSave = useCallback(
     (next: VaultData) => {
       pendingRef.current = next
       if (conflictRef.current) return
+      clearSaveRetry()
       void flushSaves()
     },
-    [flushSaves],
+    [clearSaveRetry, flushSaves],
   )
+
+  const retrySave = useCallback(() => {
+    clearSaveRetry()
+    retryAttemptRef.current = 0
+    setError(null)
+    void flushSaves()
+  }, [clearSaveRetry, flushSaves])
+
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!pendingRef.current && !savingRef.current) return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [])
 
   const mutate = useCallback(
     (change: (current: VaultData) => VaultData) => {
@@ -574,6 +641,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         dataRef.current = snapshot.remote
         pendingRef.current = null
         conflictRef.current = null
+        clearSaveRetry()
+        retryAttemptRef.current = 0
         versionRef.current = snapshot.remoteVersion
         setData(snapshot.remote)
         setConflict(null)
@@ -615,6 +684,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         dataRef.current = next
         pendingRef.current = null
         conflictRef.current = null
+        clearSaveRetry()
+        retryAttemptRef.current = 0
         versionRef.current = result.version
         setData(next)
         setConflict(null)
@@ -638,7 +709,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         savingRef.current = false
       }
     },
-    [enterConflict, pullRemoteVault],
+    [clearSaveRetry, enterConflict, pullRemoteVault],
   )
 
   const deleteEntryPermanently = useCallback(
@@ -689,6 +760,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         dataRef.current = decrypted
         pendingRef.current = null
         conflictRef.current = null
+        clearSaveRetry()
+        retryAttemptRef.current = 0
         versionRef.current = remote.version
         setData(decrypted)
         setConflict(null)
@@ -706,7 +779,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         throw caught
       }
     },
-    [loadIdentity],
+    [clearSaveRetry, loadIdentity],
   )
 
   const register = useCallback(async (userHandle: string, password: string) => {
@@ -738,6 +811,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     dataRef.current = payload
     pendingRef.current = null
     conflictRef.current = null
+    clearSaveRetry()
+    retryAttemptRef.current = 0
     setData(payload)
     setConflict(null)
     handleRef.current = result.handle
@@ -748,7 +823,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     void loadIdentity(result.handle, vaultKey).catch(() => {
       // The account exists even if identity setup is delayed. Retry on demand.
     })
-  }, [clearPendingPasskey, loadIdentity])
+  }, [clearPendingPasskey, clearSaveRetry, loadIdentity])
 
   const unlock = useCallback(
     async (userHandle: string, password: string) => {
@@ -1070,6 +1145,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     mutate,
     ensureIdentity,
     deleteEntryPermanently,
+    retrySave,
     changeMasterPassword,
     exportBackup,
     exportCsv,

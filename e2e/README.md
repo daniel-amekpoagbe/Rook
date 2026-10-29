@@ -2,8 +2,10 @@
 
 These flows run against a real Rook server with a disposable SQLite database.
 They cover registration and unlock, import, history/trash, the authenticator
-view, recipient-bound sharing, mobile sharing, conflict recovery, and a WebAuthn
-passkey flow.
+view, recipient-bound sharing, mobile sharing, conflict recovery, a WebAuthn
+passkey flow, and the product polish checks (theme-aware lock screen, list
+grouping and filters, modal focus/inert behavior, audit actions, and bulk trash
+actions).
 
 ## Run the whole suite
 
@@ -61,9 +63,21 @@ Legacy bearer links are no longer created by the UI. To verify read
 compatibility, the flow inserts a valid legacy `shares` row directly and opens
 its URL-fragment link.
 
+`share-inbox.e2e.mjs` verifies the recipient unread badge and notification,
+then adds a received login to the recipient vault, confirms duplicate detection,
+and checks that the “Shared by me” view can revoke the active share without
+removing the saved copy.
+
 `share-edge.e2e.mjs` covers long and password-only items, including no
 horizontal overflow. `share-mobile.e2e.mjs` repeats the share and inbox flow at
 a 390 px viewport and checks the mobile navigation.
+
+## Polish flow
+
+`polish.e2e.mjs` creates an account and checks that the lock screen follows the
+light/dark theme, favorites are grouped, tag filtering and sorting work, modals
+trap focus and inert the background, audit findings can be ignored/restored and
+open the generator, and trash supports multi-select restore and empty-trash.
 
 ## Passkey flow and origins
 

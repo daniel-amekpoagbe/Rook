@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { createPortal } from 'react-dom'
 import type { IconType } from 'react-icons'
 import {
   LuArchive,
@@ -36,6 +37,7 @@ import {
   LuRefreshCw,
   LuSearch,
   LuSettings2,
+  LuShare2,
   LuShieldAlert,
   LuShieldCheck,
   LuShuffle,
@@ -97,6 +99,7 @@ const ICONS: Record<string, IconType> = {
   refresh: LuRefreshCw,
   search: LuSearch,
   settings: LuSettings2,
+  share: LuShare2,
   shield: LuShieldCheck,
   shieldAlert: LuShieldAlert,
   shuffle: LuShuffle,
@@ -208,26 +211,123 @@ export function useCopyToClipboard(clearAfterMs = 30_000) {
   }
 }
 
-function useLockBodyScroll(open: boolean) {
-  useEffect(() => {
-    if (!open) return
-    const previous = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return () => {
-      document.body.style.overflow = previous
-    }
-  }, [open])
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled]):not([type="hidden"])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',')
+
+let modalRoot: HTMLDivElement | null = null
+let modalLockCount = 0
+let previousBodyOverflow = ''
+const inertedElements: Array<{ element: HTMLElement; previous: boolean }> = []
+
+function getModalRoot(): HTMLElement | null {
+  if (typeof document === 'undefined') return null
+  if (!modalRoot) {
+    modalRoot = document.createElement('div')
+    modalRoot.id = 'rook-modal-root'
+    document.body.appendChild(modalRoot)
+  }
+  return modalRoot
 }
 
-function useEscape(open: boolean, onClose: () => void) {
+function lockModalBackground() {
+  if (modalLockCount++ > 0) return
+  previousBodyOverflow = document.body.style.overflow
+  document.body.style.overflow = 'hidden'
+  const root = getModalRoot()
+  for (const child of Array.from(document.body.children)) {
+    if (child === root || !(child instanceof HTMLElement)) continue
+    if (['SCRIPT', 'STYLE', 'LINK', 'META', 'NOSCRIPT', 'TEMPLATE'].includes(child.tagName)) continue
+    inertedElements.push({ element: child, previous: child.inert })
+    child.inert = true
+  }
+}
+
+function unlockModalBackground() {
+  if (modalLockCount === 0) return
+  if (--modalLockCount > 0) return
+  document.body.style.overflow = previousBodyOverflow
+  for (const { element, previous } of inertedElements.splice(0)) {
+    element.inert = previous
+  }
+}
+
+function focusableWithin(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+    (element) => element.getClientRects().length > 0,
+  )
+}
+
+function useDialogLayer(
+  open: boolean,
+  dialogRef: RefObject<HTMLElement | null>,
+  onClose: () => void,
+  dismissible: boolean,
+) {
+  const onCloseRef = useRef(onClose)
+  useEffect(() => {
+    onCloseRef.current = onClose
+  }, [onClose])
+
   useEffect(() => {
     if (!open) return
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
+    const dialog = dialogRef.current
+    if (!dialog) return
+
+    const previous =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null
+    lockModalBackground()
+
+    const preferred = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        '[data-autofocus], input:not([type="hidden"]):not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([data-skip-autofocus]):not([disabled])',
+      ),
+    ).find((element) => element.getClientRects().length > 0)
+    if (preferred) {
+      preferred.focus({ preventScroll: true })
+    } else {
+      dialog.tabIndex = -1
+      dialog.focus({ preventScroll: true })
     }
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        if (dismissible) onCloseRef.current()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const items = focusableWithin(dialog)
+      if (items.length === 0) {
+        event.preventDefault()
+        dialog.focus({ preventScroll: true })
+        return
+      }
+      const first = items[0]!
+      const last = items[items.length - 1]!
+      const active = document.activeElement
+      if (event.shiftKey) {
+        if (active === first || !dialog.contains(active)) {
+          event.preventDefault()
+          last.focus()
+        }
+      } else if (active === last || !dialog.contains(active)) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      unlockModalBackground()
+      if (previous?.isConnected) previous.focus({ preventScroll: true })
+    }
+  }, [open, dialogRef, dismissible])
 }
 
 export function Modal({
@@ -247,11 +347,12 @@ export function Modal({
   width?: string
   dismissible?: boolean
 }) {
-  useEscape(open, dismissible ? onClose : () => {})
-  useLockBodyScroll(open)
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useDialogLayer(open, dialogRef, onClose, dismissible)
 
-  if (!open) return null
-  return (
+  const portalTarget = open ? getModalRoot() : null
+  if (!open || !portalTarget) return null
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       {dismissible ? (
         <button
@@ -264,6 +365,7 @@ export function Modal({
         <div aria-hidden="true" className="absolute inset-0 bg-black/30 fade-in dark:bg-black/55" />
       )}
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -278,14 +380,21 @@ export function Modal({
             {description && <p className="truncate text-[11.5px] text-muted">{description}</p>}
           </div>
           {dismissible && (
-            <button type="button" onClick={onClose} className="icon-btn -mr-2" aria-label="Close dialog">
+            <button
+              type="button"
+              onClick={onClose}
+              className="icon-btn -mr-2"
+              aria-label="Close dialog"
+              data-skip-autofocus
+            >
               <Icon name="close" size={16} />
             </button>
           )}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
       </div>
-    </div>
+    </div>,
+    portalTarget,
   )
 }
 
@@ -302,11 +411,12 @@ export function Sheet({
   description?: string
   children: ReactNode
 }) {
-  useEscape(open, onClose)
-  useLockBodyScroll(open)
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useDialogLayer(open, dialogRef, onClose, true)
 
-  if (!open) return null
-  return (
+  const portalTarget = open ? getModalRoot() : null
+  if (!open || !portalTarget) return null
+  return createPortal(
     <div className="fixed inset-0 z-50 flex justify-end">
       <button
         type="button"
@@ -315,6 +425,7 @@ export function Sheet({
         className="absolute inset-0 bg-black/35 fade-in backdrop-blur-[1px] dark:bg-black/60"
       />
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -325,13 +436,20 @@ export function Sheet({
             <h2 className="truncate text-[14px] font-semibold tracking-[-0.01em]">{title}</h2>
             {description && <p className="truncate text-[11.5px] text-muted">{description}</p>}
           </div>
-          <button type="button" onClick={onClose} className="icon-btn -mr-2" aria-label="Close panel">
+          <button
+            type="button"
+            onClick={onClose}
+            className="icon-btn -mr-2"
+            aria-label="Close panel"
+            data-skip-autofocus
+          >
             <Icon name="close" size={16} />
           </button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">{children}</div>
       </div>
-    </div>
+    </div>,
+    portalTarget,
   )
 }
 

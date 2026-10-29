@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useVault, type ConflictChoice } from '~/lib/vault-context'
 import { parseTotp } from '~/lib/totp'
+import { listReceivedRecipientSharesFn } from '~/server/api'
 import {
   hostOf,
   matchesQuery,
@@ -13,12 +14,14 @@ import {
   trashEntry,
   upsertEntry,
   type Entry,
+  type EntrySort,
   type EntryType,
 } from '~/lib/vault'
 import { AuditModal } from './AuditPanel'
 import { AuthenticatorModal } from './AuthenticatorModal'
 import { EntryForm, GeneratorModal, TYPE_META, newDraft } from './EntryEditor'
 import { ReceivedSharesDialog } from './ReceivedSharesDialog'
+import { SentSharesDialog } from './SentSharesDialog'
 import { SettingsModal } from './SettingsPanel'
 import { ShareDialog } from './ShareDialog'
 import { TotpBlock } from './TotpCode'
@@ -254,6 +257,15 @@ function EntryDetail({
                   <span>{meta.label}</span>
                 )}
                 {entry.username && <span className="max-w-[28ch] truncate">{entry.username}</span>}
+                {entry.type === 'login' && entry.password && (
+                  <span className="chip normal-case tracking-normal">
+                    {entry.twoFactor === 'on' || (entry.totp && parseTotp(entry.totp))
+                      ? '2FA on'
+                      : entry.twoFactor === 'unavailable'
+                        ? 'No 2FA offered'
+                        : '2FA off'}
+                  </span>
+                )}
               </div>
             </div>
           </div>
@@ -425,12 +437,16 @@ export function VaultApp() {
     lastSyncedAt,
     clearError,
     deleteEntryPermanently,
+    retrySave,
   } = useVault()
   const [resolving, setResolving] = useState<ConflictChoice | null>(null)
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<Filter>('all')
+  const [sort, setSort] = useState<EntrySort>('title')
+  const [tagFilter, setTagFilter] = useState('all')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [editing, setEditing] = useState<Entry | null>(null)
+  const [editGeneratorOpen, setEditGeneratorOpen] = useState(false)
   const [newMenuOpen, setNewMenuOpen] = useState(false)
   const [auditOpen, setAuditOpen] = useState(false)
   const [authenticatorOpen, setAuthenticatorOpen] = useState(false)
@@ -440,6 +456,13 @@ export function VaultApp() {
   const [deleteForeverTarget, setDeleteForeverTarget] = useState<Entry | null>(null)
   const [shareTarget, setShareTarget] = useState<Entry | null>(null)
   const [receivedOpen, setReceivedOpen] = useState(false)
+  const [sentOpen, setSentOpen] = useState(false)
+  const [receivedIds, setReceivedIds] = useState<string[]>([])
+  const [receivedUnread, setReceivedUnread] = useState(0)
+  const [receivedNoticeDismissed, setReceivedNoticeDismissed] = useState(false)
+  const [trashSelection, setTrashSelection] = useState<Set<string>>(new Set())
+  const [bulkAction, setBulkAction] = useState<'delete' | 'empty' | null>(null)
+  const [bulkBusy, setBulkBusy] = useState(false)
   const [railOpen, setRailOpen] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
 
@@ -461,6 +484,77 @@ export function VaultApp() {
   const entries = data?.entries ?? []
   const trash = data?.trash ?? []
 
+  const tagOptions = useMemo(() => {
+    const source =
+      filter === 'trash'
+        ? trash
+        : filter === 'favorites'
+          ? entries.filter((entry) => entry.favorite)
+          : filter === 'all'
+            ? entries
+            : entries.filter((entry) => entry.type === filter)
+    return [...new Set(source.flatMap((entry) => entry.tags))].sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: 'base' }),
+    )
+  }, [entries, trash, filter])
+
+  useEffect(() => {
+    if (tagFilter !== 'all' && !tagOptions.includes(tagFilter)) setTagFilter('all')
+  }, [tagFilter, tagOptions])
+
+  useEffect(() => {
+    setTrashSelection((prev) => {
+      if (prev.size === 0) return prev
+      const valid = new Set(trash.map((entry) => entry.id))
+      const next = new Set([...prev].filter((id) => valid.has(id)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [trash])
+
+  useEffect(() => {
+    if (filter !== 'trash') setTrashSelection(new Set())
+  }, [filter])
+
+  useEffect(() => {
+    if (!handle) return
+    let cancelled = false
+
+    async function refreshReceived() {
+      try {
+        const result = await listReceivedRecipientSharesFn()
+        if (cancelled) return
+        const active = result.shares.filter((share) => share.expiresAt > Date.now())
+        setReceivedIds(active.map((share) => share.id))
+        let seen: string[] = []
+        try {
+          seen = JSON.parse(localStorage.getItem(`rook.seenShares.${handle}`) ?? '[]') as string[]
+        } catch {
+          seen = []
+        }
+        const seenSet = new Set(seen)
+        setReceivedUnread(active.filter((share) => !seenSet.has(share.id)).length)
+      } catch {
+        // Sharing is additive; a transient failure must not interrupt the vault.
+      }
+    }
+
+    void refreshReceived()
+    const timer = window.setInterval(refreshReceived, 60_000)
+    const onFocus = () => void refreshReceived()
+    window.addEventListener('focus', onFocus)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [handle])
+
+  useEffect(() => {
+    // A newly received share should surface its notification again, even if
+    // the previous one was dismissed.
+    if (receivedUnread > 0) setReceivedNoticeDismissed(false)
+  }, [receivedUnread])
+
   const visible = useMemo(() => {
     const source = filter === 'trash' ? trash : entries
     const filtered = source.filter((entry) => {
@@ -473,10 +567,24 @@ export function VaultApp() {
       ) {
         return false
       }
+      if (filter !== 'trash' && tagFilter !== 'all' && !entry.tags.includes(tagFilter)) {
+        return false
+      }
       return matchesQuery(entry, query)
     })
-    return filter === 'trash' ? sortTrash(filtered) : sortEntries(filtered)
-  }, [entries, trash, filter, query])
+    return filter === 'trash' ? sortTrash(filtered) : sortEntries(filtered, sort)
+  }, [entries, trash, filter, query, sort, tagFilter])
+
+  const groupFavorites = filter !== 'trash' && filter !== 'favorites'
+  const favoriteVisible = groupFavorites ? visible.filter((entry) => entry.favorite) : []
+  const otherVisible = groupFavorites ? visible.filter((entry) => !entry.favorite) : visible
+  const listGroups =
+    favoriteVisible.length > 0
+      ? [
+          { label: 'Favorites', items: favoriteVisible },
+          ...(otherVisible.length > 0 ? [{ label: 'Other items', items: otherVisible }] : []),
+        ]
+      : [{ label: null, items: visible }]
 
   const counts = useMemo(() => {
     const byType = (type: EntryType) => entries.filter((entry) => entry.type === type).length
@@ -549,7 +657,127 @@ export function VaultApp() {
   function startCreate(type: EntryType) {
     setNewMenuOpen(false)
     setRailOpen(false)
+    setEditGeneratorOpen(false)
     setEditing(newDraft(type))
+  }
+
+  function openEntry(entry: Entry) {
+    setFilter('all')
+    setQuery('')
+    setTagFilter('all')
+    setSelectedId(entry.id)
+    setEditing(null)
+    setEditGeneratorOpen(false)
+    setRailOpen(false)
+  }
+
+  function generateForEntry(entry: Entry) {
+    setAuditOpen(false)
+    setFilter('all')
+    setQuery('')
+    setTagFilter('all')
+    setSelectedId(entry.id)
+    setEditGeneratorOpen(true)
+    setEditing(entry)
+  }
+
+  function setAuditIgnored(entry: Entry, ignored: boolean) {
+    saveEntry({ ...entry, auditIgnored: ignored }, false)
+  }
+
+  function markReceivedSeen(ids: string[] = receivedIds) {
+    if (!handle) return
+    let seen: string[] = []
+    try {
+      seen = JSON.parse(localStorage.getItem(`rook.seenShares.${handle}`) ?? '[]') as string[]
+    } catch {
+      seen = []
+    }
+    const active = new Set([...receivedIds, ...ids])
+    const merged = [...new Set([...seen, ...ids])]
+    // Prune shares that are no longer active so the local marker cannot grow
+    // forever. Keep the list untouched until at least one share is known.
+    const next = active.size > 0 ? merged.filter((id) => active.has(id)) : merged
+    try {
+      localStorage.setItem(`rook.seenShares.${handle}`, JSON.stringify(next))
+    } catch {
+      // A private-mode storage failure should not block the share inbox.
+    }
+    setReceivedUnread(0)
+  }
+
+  function openReceivedShares() {
+    // The inbox marks shares as seen only after they load, so a transient
+    // network failure does not clear the unread badge.
+    setReceivedOpen(true)
+    setRailOpen(false)
+  }
+
+  const selectedTrash = trash.filter((entry) => trashSelection.has(entry.id))
+  const allVisibleSelected = visible.length > 0 && visible.every((entry) => trashSelection.has(entry.id))
+
+  function toggleTrashSelection(id: string) {
+    setTrashSelection((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function toggleAllVisible() {
+    setTrashSelection((prev) => {
+      if (allVisibleSelected) {
+        const next = new Set(prev)
+        for (const entry of visible) next.delete(entry.id)
+        return next
+      }
+      return new Set([...prev, ...visible.map((entry) => entry.id)])
+    })
+  }
+
+  function restoreSelected() {
+    if (selectedTrash.length === 0) return
+    mutate((current) => selectedTrash.reduce((next, entry) => restoreEntry(next, entry.id), current))
+    setFilter('all')
+    setQuery('')
+    setTagFilter('all')
+    setSelectedId(selectedTrash[0]?.id ?? null)
+    setTrashSelection(new Set())
+  }
+
+  async function deleteSelectedForever() {
+    if (selectedTrash.length === 0) return
+    setBulkBusy(true)
+    try {
+      for (const entry of selectedTrash) {
+        await deleteEntryPermanently(entry.id)
+      }
+      setSelectedId(null)
+      setTrashSelection(new Set())
+    } catch {
+      // The vault context surfaces save/conflict errors in the main banner.
+    } finally {
+      setBulkBusy(false)
+      setBulkAction(null)
+    }
+  }
+
+  async function emptyTrash() {
+    if (trash.length === 0) return
+    setBulkBusy(true)
+    try {
+      for (const entry of trash) {
+        await deleteEntryPermanently(entry.id)
+      }
+      setSelectedId(null)
+      setTrashSelection(new Set())
+    } catch {
+      // The vault context surfaces save/conflict errors in the main banner.
+    } finally {
+      setBulkBusy(false)
+      setBulkAction(null)
+    }
   }
 
   const emptyState = query
@@ -695,13 +923,27 @@ export function VaultApp() {
             <button
               type="button"
               className="nav-item"
-              onClick={() => {
-                setReceivedOpen(true)
-                setRailOpen(false)
-              }}
+              onClick={openReceivedShares}
+              aria-label={`Shared with me${receivedUnread > 0 ? `, ${receivedUnread} unread` : ''}`}
             >
               <Icon name="mail" size={16} className="text-faint" />
               <span className="flex-1 text-left">Shared with me</span>
+              {receivedUnread > 0 && (
+                <span className="rounded-full bg-accent px-1.5 py-0.5 text-[10px] font-semibold leading-none text-on-accent tabular-nums">
+                  {receivedUnread}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              className="nav-item"
+              onClick={() => {
+                setSentOpen(true)
+                setRailOpen(false)
+              }}
+            >
+              <Icon name="share" size={16} className="text-faint" />
+              <span className="flex-1 text-left">Shared by me</span>
             </button>
             <button
               type="button"
@@ -746,7 +988,7 @@ export function VaultApp() {
             </span>
             <div className="min-w-0 flex-1">
               <p className="truncate text-[12px] font-medium text-ink">{handle}</p>
-              <p className="text-[10.5px] text-faint">Local vault</p>
+              <p className="text-[10.5px] text-faint">Synced to server</p>
             </div>
             <button
               type="button"
@@ -860,6 +1102,80 @@ export function VaultApp() {
               <span className="kbd pointer-events-none absolute top-1/2 right-2 hidden -translate-y-1/2 sm:inline-flex">⌘K</span>
             )}
           </div>
+
+          {filter === 'trash' ? (
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              <label className="mr-auto flex cursor-pointer items-center gap-1.5 text-[11px] text-muted">
+                <input
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  onChange={toggleAllVisible}
+                  disabled={visible.length === 0}
+                  className="size-3.5 accent-[var(--primary)]"
+                />
+                Select all
+              </label>
+              {selectedTrash.length > 0 && (
+                <span className="text-[10.5px] text-faint">{selectedTrash.length} selected</span>
+              )}
+              <button
+                type="button"
+                className="btn-secondary h-7 px-2 text-[11px]"
+                onClick={restoreSelected}
+                disabled={selectedTrash.length === 0 || bulkBusy}
+              >
+                <Icon name="undo" size={12} /> Restore selected
+              </button>
+              <button
+                type="button"
+                className="btn-quiet h-7 px-2 text-[11px] text-danger"
+                onClick={() => setBulkAction('delete')}
+                disabled={selectedTrash.length === 0 || bulkBusy}
+              >
+                Delete
+              </button>
+              <button
+                type="button"
+                className="btn-quiet h-7 px-2 text-[11px] text-danger"
+                onClick={() => setBulkAction('empty')}
+                disabled={trash.length === 0 || bulkBusy}
+              >
+                Empty trash
+              </button>
+            </div>
+          ) : (
+            <div className="mt-2 flex items-center gap-1.5">
+              <label className="sr-only" htmlFor="entry-sort">
+                Sort items
+              </label>
+              <select
+                id="entry-sort"
+                value={sort}
+                onChange={(event) => setSort(event.target.value as EntrySort)}
+                className="field h-7 min-w-0 flex-1 px-2 text-[11.5px]"
+              >
+                <option value="title">Title A–Z</option>
+                <option value="updated">Recently updated</option>
+                <option value="created">Recently added</option>
+              </select>
+              <label className="sr-only" htmlFor="entry-tag">
+                Filter by tag
+              </label>
+              <select
+                id="entry-tag"
+                value={tagFilter}
+                onChange={(event) => setTagFilter(event.target.value)}
+                className="field h-7 min-w-0 flex-1 px-2 text-[11.5px]"
+              >
+                <option value="all">All tags</option>
+                {tagOptions.map((tag) => (
+                  <option key={tag} value={tag}>
+                    {tag}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
@@ -877,46 +1193,71 @@ export function VaultApp() {
             </div>
           )}
 
-          {visible.map((entry) => {
-            const subtitle =
-              filter === 'trash'
-                ? {
-                    text: `Deleted ${timeAgo(new Date(entry.deletedAt ?? entry.updatedAt).getTime())}`,
-                    mono: false,
-                  }
-                : entrySubtitle(entry)
-            return (
-            <button
-              key={entry.id}
-              type="button"
-              onClick={() => {
-                setSelectedId(entry.id)
-                setEditing(null)
-                setRailOpen(false)
-              }}
-              className={cx(
-                'group mb-0.5 flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors duration-100',
-                selectedId === entry.id && !formOpen ? 'bg-accent-soft' : 'hover:bg-surface-3',
+          {listGroups.map((group) => (
+            <div key={group.label ?? 'items'}>
+              {group.label && (
+                <p className="px-2 pt-2 pb-1 text-[10px] font-semibold tracking-[0.08em] text-faint uppercase">
+                  {group.label}
+                </p>
               )}
-            >
-              <EntryAvatar entry={entry} />
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-1.5">
-                  <span className="truncate text-[13px] font-medium text-ink">{entry.title}</span>
-                  {entry.favorite && <Icon name="star" size={10} className="shrink-0 text-warn" filled />}
-                </span>
-                <span
-                  className={cx(
-                    'mt-0.5 block truncate text-[11.5px] text-muted',
-                    subtitle.mono && 'font-mono',
-                  )}
-                >
-                  {subtitle.text}
-                </span>
-              </span>
-            </button>
-            )
-          })}
+              {group.items.map((entry) => {
+                const subtitle =
+                  filter === 'trash'
+                    ? {
+                        text: `Deleted ${timeAgo(new Date(entry.deletedAt ?? entry.updatedAt).getTime())}`,
+                        mono: false,
+                      }
+                    : entrySubtitle(entry)
+                return (
+                  <div
+                    key={entry.id}
+                    className={cx(
+                      'group mb-0.5 flex w-full items-center gap-1 rounded-lg transition-colors duration-100',
+                      selectedId === entry.id && !formOpen ? 'bg-accent-soft' : 'hover:bg-surface-3',
+                    )}
+                  >
+                    {filter === 'trash' && (
+                      <input
+                        type="checkbox"
+                        checked={trashSelection.has(entry.id)}
+                        onChange={() => toggleTrashSelection(entry.id)}
+                        aria-label={`Select ${entry.title}`}
+                        className="ml-2 size-3.5 shrink-0 accent-[var(--primary)]"
+                      />
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedId(entry.id)
+                        setEditing(null)
+                        setRailOpen(false)
+                      }}
+                      className={cx(
+                        'flex min-w-0 flex-1 items-center gap-3 py-2 text-left',
+                        filter === 'trash' ? 'pr-2' : 'px-2',
+                      )}
+                    >
+                      <EntryAvatar entry={entry} />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-1.5">
+                          <span className="truncate text-[13px] font-medium text-ink">{entry.title}</span>
+                          {entry.favorite && <Icon name="star" size={10} className="shrink-0 text-warn" filled />}
+                        </span>
+                        <span
+                          className={cx(
+                            'mt-0.5 block truncate text-[11.5px] text-muted',
+                            subtitle.mono && 'font-mono',
+                          )}
+                        >
+                          {subtitle.text}
+                        </span>
+                      </span>
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          ))}
         </div>
 
         <div className="flex h-9 shrink-0 items-center justify-between border-t border-line px-3 text-[10.5px] text-faint">
@@ -933,7 +1274,13 @@ export function VaultApp() {
                       : 'bg-faint',
               )}
             />
-            {sync === 'saving' ? 'Saving…' : sync === 'conflict' ? 'Conflict' : `Saved ${timeAgo(lastSyncedAt)}`}
+            {sync === 'saving'
+              ? 'Saving…'
+              : sync === 'conflict'
+                ? 'Conflict'
+                : sync === 'error'
+                  ? 'Not saved'
+                  : `Saved ${timeAgo(lastSyncedAt)}`}
           </span>
           <span className="inline-flex items-center gap-1">
             <Icon name="lock" size={10} /> Encrypted
@@ -948,22 +1295,32 @@ export function VaultApp() {
               <Icon name="alert" size={14} className="shrink-0" />
               <span className="truncate">{error}</span>
             </span>
-            <button type="button" onClick={clearError} aria-label="Dismiss" className="icon-btn size-7">
-              <Icon name="close" size={14} />
-            </button>
+            <span className="flex shrink-0 items-center gap-1">
+              {sync === 'error' && (
+                <button type="button" className="btn-secondary h-7 px-2 text-[11px]" onClick={retrySave}>
+                  <Icon name="refresh" size={12} /> Retry
+                </button>
+              )}
+              <button type="button" onClick={clearError} aria-label="Dismiss" className="icon-btn size-7">
+                <Icon name="close" size={14} />
+              </button>
+            </span>
           </div>
         )}
 
         {formOpen && editing ? (
           <EntryForm
             entry={editing}
+            initialGeneratorOpen={editGeneratorOpen}
             onCancel={() => {
+              setEditGeneratorOpen(false)
               setEditing(null)
             }}
             onSave={(entry) => {
               const saved = entry.id ? entry : { ...entry, id: crypto.randomUUID() }
               saveEntry(saved)
               setSelectedId(saved.id)
+              setEditGeneratorOpen(false)
               setEditing(null)
             }}
           />
@@ -971,7 +1328,10 @@ export function VaultApp() {
           <EntryDetail
             entry={selected}
             history={history}
-            onEdit={() => setEditing(selected)}
+            onEdit={() => {
+              setEditGeneratorOpen(false)
+              setEditing(selected)
+            }}
             onDelete={() => setDeleteTarget(selected)}
             onToggleFavorite={() => toggleFavorite(selected)}
             onBack={() => setSelectedId(null)}
@@ -1067,17 +1427,24 @@ export function VaultApp() {
         )}
       </main>
 
-      <AuditModal open={auditOpen} onClose={() => setAuditOpen(false)} entries={entries} />
+      <AuditModal
+        open={auditOpen}
+        onClose={() => setAuditOpen(false)}
+        entries={entries}
+        onOpenEntry={(entry) => {
+          setAuditOpen(false)
+          openEntry(entry)
+        }}
+        onGeneratePassword={generateForEntry}
+        onSetIgnored={setAuditIgnored}
+      />
       {authenticatorOpen && (
         <AuthenticatorModal
           entries={entries}
           onClose={() => setAuthenticatorOpen(false)}
           onOpenEntry={(entry) => {
             setAuthenticatorOpen(false)
-            setEditing(null)
-            setFilter('all')
-            setQuery('')
-            setSelectedId(entry.id)
+            openEntry(entry)
           }}
         />
       )}
@@ -1091,7 +1458,61 @@ export function VaultApp() {
           handle={handle}
         />
       )}
-      <ReceivedSharesDialog open={receivedOpen} onClose={() => setReceivedOpen(false)} />
+      <ReceivedSharesDialog
+        open={receivedOpen}
+        onClose={() => setReceivedOpen(false)}
+        onSeen={markReceivedSeen}
+        onAdded={(entry) => {
+          setReceivedOpen(false)
+          openEntry(entry)
+        }}
+      />
+      <SentSharesDialog
+        open={sentOpen}
+        onClose={() => setSentOpen(false)}
+        entries={entries}
+        onOpenEntry={(entry) => {
+          setSentOpen(false)
+          openEntry(entry)
+        }}
+      />
+
+      {receivedUnread > 0 && !receivedNoticeDismissed && (
+        <div
+          role="status"
+          className="fixed right-4 bottom-4 z-50 flex w-[min(360px,calc(100vw-2rem))] items-start gap-3 rounded-xl border border-line bg-surface p-3 shadow-float"
+        >
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-accent">
+            <Icon name="mail" size={15} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-[12.5px] font-medium text-ink">
+              {receivedUnread} new shared {receivedUnread === 1 ? 'item' : 'items'}
+            </p>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-muted">
+              Someone shared a login with you. Review it in your inbox.
+            </p>
+            <button
+              type="button"
+              className="btn-primary mt-2 h-7 px-2 text-[11px]"
+              onClick={() => {
+                setReceivedNoticeDismissed(true)
+                openReceivedShares()
+              }}
+            >
+              Review
+            </button>
+          </div>
+          <button
+            type="button"
+            className="icon-btn size-7 shrink-0"
+            aria-label="Dismiss notification"
+            onClick={() => setReceivedNoticeDismissed(true)}
+          >
+            <Icon name="close" size={13} />
+          </button>
+        </div>
+      )}
 
       <Modal
         open={Boolean(deleteTarget)}
@@ -1142,6 +1563,56 @@ export function VaultApp() {
             }}
           >
             <Icon name="trash" size={14} /> Delete permanently
+          </button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={bulkAction === 'delete'}
+        onClose={() => setBulkAction(null)}
+        title="Delete selected permanently"
+        width="max-w-sm"
+      >
+        <p className="text-[13px] leading-relaxed text-muted">
+          {selectedTrash.length} {selectedTrash.length === 1 ? 'item' : 'items'} will be removed
+          permanently, including version history. This cannot be undone.
+        </p>
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" className="btn-secondary" onClick={() => setBulkAction(null)}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn-danger-solid"
+            onClick={() => void deleteSelectedForever()}
+            disabled={bulkBusy}
+          >
+            <Icon name="trash" size={14} /> {bulkBusy ? 'Deleting…' : 'Delete permanently'}
+          </button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={bulkAction === 'empty'}
+        onClose={() => setBulkAction(null)}
+        title="Empty trash"
+        width="max-w-sm"
+      >
+        <p className="text-[13px] leading-relaxed text-muted">
+          All {trash.length} {trash.length === 1 ? 'item' : 'items'} in Trash will be removed
+          permanently, including version history. This cannot be undone.
+        </p>
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" className="btn-secondary" onClick={() => setBulkAction(null)}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn-danger-solid"
+            onClick={() => void emptyTrash()}
+            disabled={bulkBusy}
+          >
+            <Icon name="trash" size={14} /> {bulkBusy ? 'Emptying…' : 'Empty trash'}
           </button>
         </div>
       </Modal>

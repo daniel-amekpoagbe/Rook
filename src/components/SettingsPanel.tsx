@@ -736,7 +736,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         <ul className="space-y-1.5 text-[11.5px] leading-relaxed text-muted">
           <li className="flex gap-2">
             <Icon name="check" size={13} className="mt-0.5 shrink-0 text-success" />
-            Vault blob: SQLite on the Node server, encrypted before upload.
+            Vault blob: PostgreSQL on Supabase, encrypted before upload.
           </li>
           <li className="flex gap-2">
             <Icon name="check" size={13} className="mt-0.5 shrink-0 text-success" />

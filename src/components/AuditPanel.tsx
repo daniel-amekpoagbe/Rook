@@ -36,19 +36,43 @@ function hasValidTotp(entry: Entry): boolean {
   return Boolean(entry.totp && parseTotp(entry.totp))
 }
 
-export function AuditModal({ open, onClose, entries }: { open: boolean; onClose: () => void; entries: Entry[] }) {
+/** A login is protected when the user says 2FA is on, says the site has none, or stores a valid secret. */
+function needs2fa(entry: Entry): boolean {
+  if (entry.type !== 'login' || !entry.password) return false
+  if (entry.twoFactor === 'on' || entry.twoFactor === 'unavailable') return false
+  return !hasValidTotp(entry)
+}
+
+export function AuditModal({
+  open,
+  onClose,
+  entries,
+  onOpenEntry,
+  onGeneratePassword,
+  onSetIgnored,
+}: {
+  open: boolean
+  onClose: () => void
+  entries: Entry[]
+  onOpenEntry: (entry: Entry) => void
+  onGeneratePassword: (entry: Entry) => void
+  onSetIgnored: (entry: Entry, ignored: boolean) => void
+}) {
   const [breaches, setBreaches] = useState<Map<string, number> | null>(null)
   const [checking, setChecking] = useState(false)
   const [breachError, setBreachError] = useState<string | null>(null)
 
+  const auditable = useMemo(() => entries.filter((entry) => !entry.auditIgnored), [entries])
+  const ignored = useMemo(() => entries.filter((entry) => entry.auditIgnored), [entries])
+
   const flags = useMemo<Flag[]>(() => {
     const passwordCounts = new Map<string, number>()
-    for (const entry of entries) {
+    for (const entry of auditable) {
       if (entry.password) passwordCounts.set(entry.password, (passwordCounts.get(entry.password) ?? 0) + 1)
     }
 
     const result: Flag[] = []
-    for (const entry of entries) {
+    for (const entry of auditable) {
       const reasons: string[] = []
       let severity: Flag['severity'] = 'low'
 
@@ -71,13 +95,13 @@ export function AuditModal({ open, onClose, entries }: { open: boolean; onClose:
         }
       }
 
-      const age = daysSince(entry.updatedAt)
+      const age = daysSince(entry.passwordUpdatedAt ?? entry.updatedAt)
       if (entry.password && age > 365) {
         reasons.push(`Unchanged for ${Math.floor(age / 30)} months`)
         if (severity === 'low') severity = 'medium'
       }
 
-      if (entry.type === 'login' && entry.password && !hasValidTotp(entry)) {
+      if (needs2fa(entry)) {
         reasons.push('No one-time password set up')
       }
 
@@ -86,24 +110,24 @@ export function AuditModal({ open, onClose, entries }: { open: boolean; onClose:
 
     const order = { high: 0, medium: 1, low: 2 }
     return result.sort((a, b) => order[a.severity] - order[b.severity])
-  }, [entries, breaches])
+  }, [auditable, breaches])
 
   const counts = useMemo(() => {
-    const withPassword = entries.filter((entry) => Boolean(entry.password))
+    const withPassword = auditable.filter((entry) => Boolean(entry.password))
     return {
       total: entries.length,
       weak: withPassword.filter((entry) => scorePassword(entry.password!).score <= 1).length,
       reused: flags.filter((flag) => flag.reasons.some((reason) => reason.startsWith('Reused'))).length,
       breached: breaches ? flags.filter((flag) => flag.reasons.includes('Found in a known breach')).length : null,
-      without2fa: entries.filter((entry) => entry.type === 'login' && entry.password && !hasValidTotp(entry)).length,
+      without2fa: auditable.filter(needs2fa).length,
     }
-  }, [entries, flags, breaches])
+  }, [entries.length, auditable, flags, breaches])
 
   async function runBreachCheck() {
     setChecking(true)
     setBreachError(null)
     try {
-      const unique = [...new Set(entries.map((entry) => entry.password).filter(Boolean))] as string[]
+      const unique = [...new Set(auditable.map((entry) => entry.password).filter(Boolean))] as string[]
       const found = new Map<string, number>()
       const batch: string[][] = []
       for (let i = 0; i < unique.length; i += 5) batch.push(unique.slice(i, i + 5))
@@ -197,8 +221,15 @@ export function AuditModal({ open, onClose, entries }: { open: boolean; onClose:
         ) : (
           <div className="space-y-1.5">
             {flags.map(({ entry, reasons, severity }) => (
-              <div key={entry.id} className="rounded-lg border border-line px-3 py-2.5">
-                <div className="flex items-start gap-2.5">
+              <div
+                key={entry.id}
+                className="rounded-lg border border-line px-3 py-2.5 transition-colors hover:border-line-strong"
+              >
+                <button
+                  type="button"
+                  className="flex w-full items-start gap-2.5 text-left"
+                  onClick={() => onOpenEntry(entry)}
+                >
                   <span
                     className={cx(
                       'mt-1.5 size-1.5 shrink-0 rounded-full',
@@ -224,10 +255,56 @@ export function AuditModal({ open, onClose, entries }: { open: boolean; onClose:
                     </ul>
                   </div>
                   <span className="chip shrink-0">{TYPE_META[entry.type].label}</span>
+                </button>
+                <div className="mt-2 flex justify-end gap-1.5 border-t border-line pt-2">
+                  <button
+                    type="button"
+                    className="btn-secondary h-7 px-2 text-[11.5px]"
+                    onClick={() => onGeneratePassword(entry)}
+                  >
+                    <Icon name="generator" size={13} />
+                    New password
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-quiet h-7 px-2 text-[11.5px]"
+                    onClick={() => onSetIgnored(entry, true)}
+                  >
+                    Ignore
+                  </button>
                 </div>
               </div>
             ))}
           </div>
+        )}
+
+        {ignored.length > 0 && (
+          <details className="group mt-4 rounded-lg border border-line bg-surface-2 px-3 py-2.5">
+            <summary className="flex cursor-pointer list-none items-center justify-between text-[12px] font-medium text-muted marker:hidden hover:text-ink">
+              <span>Ignored items ({ignored.length})</span>
+              <Icon name="chevronDown" size={14} className="transition-transform group-open:rotate-180" />
+            </summary>
+            <div className="mt-2 space-y-1.5">
+              {ignored.map((entry) => (
+                <div key={entry.id} className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="min-w-0 flex-1 truncate text-left text-[12px] text-ink hover:text-accent"
+                    onClick={() => onOpenEntry(entry)}
+                  >
+                    {entry.title}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-quiet h-7 px-2 text-[11.5px]"
+                    onClick={() => onSetIgnored(entry, false)}
+                  >
+                    Restore
+                  </button>
+                </div>
+              ))}
+            </div>
+          </details>
         )}
       </div>
     </Sheet>

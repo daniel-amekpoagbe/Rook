@@ -287,6 +287,7 @@ export interface RecipientShareRow {
 
 export interface SentRecipientShareRow {
   id: string
+  entryId: string
   recipientId: string
   recipientHandle: string
   expiresAt: number
@@ -379,6 +380,7 @@ export async function listSentRecipientShares(
   const sql = await database()
   return sql.all<SentRecipientShareRow>(
     `SELECT rs.id,
+            rs.entry_id AS "entryId",
             rs.recipient_id AS "recipientId",
             recipient.handle AS "recipientHandle",
             rs.expires_at AS "expiresAt",
@@ -388,6 +390,26 @@ export async function listSentRecipientShares(
      WHERE rs.owner_id = ? AND rs.entry_id = ? AND rs.expires_at > ?
      ORDER BY rs.created_at DESC`,
     [ownerId, entryId, now],
+  )
+}
+
+export async function listAllSentRecipientShares(
+  ownerId: string,
+  now: number,
+): Promise<SentRecipientShareRow[]> {
+  const sql = await database()
+  return sql.all<SentRecipientShareRow>(
+    `SELECT rs.id,
+            rs.entry_id AS "entryId",
+            rs.recipient_id AS "recipientId",
+            recipient.handle AS "recipientHandle",
+            rs.expires_at AS "expiresAt",
+            rs.created_at AS "createdAt"
+     FROM recipient_shares rs
+     JOIN users recipient ON recipient.id = rs.recipient_id
+     WHERE rs.owner_id = ? AND rs.expires_at > ?
+     ORDER BY rs.created_at DESC`,
+    [ownerId, now],
   )
 }
 

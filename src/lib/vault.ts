@@ -47,6 +47,18 @@ export const entrySchema = z.object({
     .optional(),
   tags: z.array(z.string().max(50)).max(30).default([]),
   favorite: z.boolean().default(false),
+  /**
+   * When the password last changed. Kept separate from updatedAt so editing a
+   * note does not make an old password look fresh in the security audit.
+   */
+  passwordUpdatedAt: z.string().optional(),
+  /**
+   * User-declared 2FA state. `unavailable` means the site does not offer 2FA,
+   * so the audit must not flag it for a missing authenticator secret.
+   */
+  twoFactor: z.enum(['on', 'off', 'unavailable']).optional(),
+  /** User choice to suppress this item's audit findings. */
+  auditIgnored: z.boolean().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
   /** Set only while an item is in the trash. */
@@ -253,6 +265,9 @@ export function newEntry(
     totp: fields.totp,
     card: fields.card,
     identity: fields.identity,
+    passwordUpdatedAt: fields.passwordUpdatedAt ?? (fields.password ? now : undefined),
+    twoFactor: fields.twoFactor,
+    auditIgnored: fields.auditIgnored,
     tags: [],
     favorite: false,
     createdAt: now,
@@ -319,7 +334,28 @@ function entryContentKey(entry: Entry): string {
     card: entry.card ?? null,
     identity: entry.identity ?? null,
     tags: entry.tags,
+    twoFactor: entry.twoFactor ?? '',
   })
+}
+
+/**
+ * Stamp a password change without treating unrelated edits as password edits.
+ * Older entries have no passwordUpdatedAt; the audit falls back to updatedAt
+ * until the password is next changed.
+ */
+function withPasswordTimestamp(existing: Entry | undefined, entry: Entry): Entry {
+  const password = entry.password ?? ''
+  if (!password) return entry
+  if (!existing) {
+    return entry.passwordUpdatedAt ? entry : { ...entry, passwordUpdatedAt: entry.updatedAt }
+  }
+  if (password !== (existing.password ?? '')) {
+    return { ...entry, passwordUpdatedAt: entry.updatedAt }
+  }
+  if (!entry.passwordUpdatedAt && existing.passwordUpdatedAt) {
+    return { ...entry, passwordUpdatedAt: existing.passwordUpdatedAt }
+  }
+  return entry
 }
 
 /** Newest first, capped so the encrypted vault cannot grow without bound. */
@@ -348,14 +384,15 @@ function addTombstone(tombstones: Tombstone[], id: string, deletedAt: string): T
 export function upsertEntry(data: VaultData, entry: Entry, record = true): VaultData {
   const existing = data.entries.find((item) => item.id === entry.id)
   const tombstones = data.tombstones.filter((item) => item.id !== entry.id)
+  const next = withPasswordTimestamp(existing, entry)
   if (!existing) {
-    return { ...data, entries: [activeCopy(entry), ...data.entries], tombstones }
+    return { ...data, entries: [activeCopy(next), ...data.entries], tombstones }
   }
 
-  const contentChanged = entryContentKey(existing) !== entryContentKey(entry)
+  const contentChanged = entryContentKey(existing) !== entryContentKey(next)
   return {
     ...data,
-    entries: data.entries.map((item) => (item.id === entry.id ? activeCopy(entry) : item)),
+    entries: data.entries.map((item) => (item.id === entry.id ? activeCopy(next) : item)),
     history: record && contentChanged ? recordHistory(data.history, existing) : data.history,
     tombstones,
   }
@@ -423,13 +460,17 @@ export function restoreVersion(
   const version = data.history[entryId]?.find((item) => item.updatedAt === versionUpdatedAt)
   if (!current || !version) return data
 
+  const restored = touch(activeCopy(version))
+  const passwordChanged = (restored.password ?? '') !== (current.password ?? '')
+  const passwordUpdatedAt = restored.password
+    ? passwordChanged
+      ? restored.updatedAt
+      : (current.passwordUpdatedAt ?? restored.passwordUpdatedAt ?? current.updatedAt)
+    : undefined
+  const next = passwordUpdatedAt ? { ...restored, passwordUpdatedAt } : restored
   return {
     ...data,
-    entries: data.entries.map((item) =>
-      item.id === entryId
-        ? touch(activeCopy(version))
-        : item,
-    ),
+    entries: data.entries.map((item) => (item.id === entryId ? next : item)),
     history: recordHistory(data.history, current),
     tombstones: data.tombstones.filter((item) => item.id !== entryId),
   }
@@ -597,6 +638,13 @@ export function matchesQuery(entry: Entry, query: string): boolean {
     entry.url,
     entry.notes,
     ...entry.tags,
+    entry.card?.number,
+    entry.card?.holder,
+    entry.card?.expiry,
+    entry.identity?.fullName,
+    entry.identity?.email,
+    entry.identity?.phone,
+    entry.identity?.address,
   ]
     .filter(Boolean)
     .join(' ')
@@ -604,9 +652,13 @@ export function matchesQuery(entry: Entry, query: string): boolean {
   return q.split(/\s+/).every((term) => haystack.includes(term))
 }
 
-export function sortEntries(entries: Entry[]): Entry[] {
+export type EntrySort = 'title' | 'updated' | 'created'
+
+export function sortEntries(entries: Entry[], sort: EntrySort = 'title'): Entry[] {
   return [...entries].sort((a, b) => {
     if (a.favorite !== b.favorite) return a.favorite ? -1 : 1
+    if (sort === 'updated') return b.updatedAt.localeCompare(a.updatedAt)
+    if (sort === 'created') return b.createdAt.localeCompare(a.createdAt)
     return a.title.localeCompare(b.title, undefined, { sensitivity: 'base' })
   })
 }

@@ -244,6 +244,7 @@ function emptyDraft(type: EntryType): Entry {
     title: '',
     tags: [],
     favorite: false,
+    twoFactor: type === 'login' ? 'off' : undefined,
     createdAt: now,
     updatedAt: now,
   }
@@ -253,14 +254,16 @@ export function EntryForm({
   entry,
   onSave,
   onCancel,
+  initialGeneratorOpen = false,
 }: {
   entry: Entry
   onSave: (entry: Entry) => void
   onCancel: () => void
+  initialGeneratorOpen?: boolean
 }) {
   const [draft, setDraft] = useState<Entry>(entry)
   const [tagText, setTagText] = useState(entry.tags.join(', '))
-  const [generatorOpen, setGeneratorOpen] = useState(false)
+  const [generatorOpen, setGeneratorOpen] = useState(initialGeneratorOpen)
   const [totpError, setTotpError] = useState<string | null>(null)
 
   const set = <K extends keyof Entry>(key: K, value: Entry[K]) =>
@@ -283,9 +286,11 @@ export function EntryForm({
       return
     }
     setTotpError(null)
+    const hasTotp = draft.type === 'login' && Boolean(draft.totp?.trim() && parseTotp(draft.totp))
     onSave({
       ...draft,
       title,
+      twoFactor: hasTotp ? 'on' : draft.twoFactor,
       tags: tagText
         .split(',')
         .map((tag) => tag.trim())
@@ -294,6 +299,10 @@ export function EntryForm({
       updatedAt: new Date().toISOString(),
     })
   }
+
+  useEffect(() => {
+    setGeneratorOpen(initialGeneratorOpen)
+  }, [initialGeneratorOpen, entry.id])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -435,6 +444,54 @@ export function EntryForm({
                       with the rest of this item.
                     </p>
                   )}
+                </div>
+
+                <div className="rounded-lg border border-line bg-surface-2 px-3 py-2.5">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="text-[12px] font-medium text-ink">Two-factor authentication</p>
+                      <p className="mt-0.5 text-[11px] leading-relaxed text-faint">
+                        Tell the audit whether this login can use 2FA.
+                      </p>
+                    </div>
+                    <div
+                      role="group"
+                      aria-label="Two-factor authentication"
+                      className="flex shrink-0 rounded-md border border-line bg-surface p-0.5"
+                    >
+                      {(
+                        [
+                          ['on', 'On'],
+                          ['off', 'Off'],
+                          ['unavailable', 'Not offered'],
+                        ] as const
+                      ).map(([value, label]) => (
+                        <button
+                          key={value}
+                          type="button"
+                          aria-pressed={(draft.twoFactor ?? 'off') === value}
+                          onClick={() => set('twoFactor', value)}
+                          className={cx(
+                            'h-7 rounded px-2 text-[11.5px] font-medium transition-colors',
+                            (draft.twoFactor ?? 'off') === value
+                              ? 'bg-accent-soft text-accent'
+                              : 'text-muted hover:text-ink',
+                          )}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <label className="mt-2.5 flex cursor-pointer items-center gap-2 border-t border-line pt-2.5 text-[11.5px] text-muted">
+                    <input
+                      type="checkbox"
+                      checked={draft.auditIgnored ?? false}
+                      onChange={(event) => set('auditIgnored', event.target.checked)}
+                      className="size-3.5 accent-[var(--primary)]"
+                    />
+                    Ignore this item in the security audit
+                  </label>
                 </div>
               </div>
             </Section>

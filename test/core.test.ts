@@ -12,13 +12,16 @@ import {
 } from '../src/lib/crypto'
 import {
   emptyVault,
+  entrySchema,
   headerAad,
   matchesQuery,
   newEntry,
   openVault,
   openVaultWithFallback,
+  restoreVersion,
   sealVault,
   sortEntries,
+  upsertEntry,
 } from '../src/lib/vault'
 import { DEFAULT_GENERATOR_OPTIONS, generatePassword, generatorEntropyBits } from '../src/lib/generator'
 import { scorePassword } from '../src/lib/strength'
@@ -236,6 +239,144 @@ test('entry search, sorting and validation', () => {
   assert.ok(matchesQuery(github, 'github daniel'))
   assert.ok(matchesQuery(bank, 'zenith'))
   assert.ok(!matchesQuery(bank, 'github'))
+
+  const card = newEntry('card', {
+    title: 'Travel card',
+    card: { number: '4111111111111111', holder: 'Ada Lovelace', expiry: '09/29' },
+  })
+  const identity = newEntry('identity', {
+    title: 'Passport',
+    identity: { fullName: 'Ada Lovelace', email: 'ada@example.com', phone: '+44 20 7946 0958' },
+  })
+  assert.ok(matchesQuery(card, '4111 1111'), 'card number is searchable')
+  assert.ok(matchesQuery(card, 'lovelace'), 'card holder is searchable')
+  assert.ok(matchesQuery(identity, 'ada@example.com'), 'identity email is searchable')
+  assert.ok(matchesQuery(identity, '7946'), 'identity phone is searchable')
+
+  const newer = {
+    ...github,
+    title: 'A newer item',
+    favorite: false,
+    updatedAt: '2026-02-01T00:00:00.000Z',
+    createdAt: '2026-01-15T00:00:00.000Z',
+  }
+  const older = {
+    ...github,
+    title: 'An older item',
+    favorite: false,
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  }
+  assert.equal(sortEntries([older, newer], 'updated')[0]?.title, 'A newer item')
+  assert.equal(sortEntries([older, newer], 'created')[0]?.title, 'A newer item')
+})
+
+test('password age, 2FA state, and audit ignore survive edits', () => {
+  const original = newEntry('login', { title: 'Mail', password: 'first-password' })
+  assert.ok(original.passwordUpdatedAt, 'a new password gets an age timestamp')
+
+  const stamped = {
+    ...original,
+    passwordUpdatedAt: '2020-01-01T00:00:00.000Z',
+    updatedAt: '2024-01-01T00:00:00.000Z',
+    twoFactor: 'off' as const,
+  }
+  let data = upsertEntry(emptyVault(), stamped)
+
+  const renamed = upsertEntry(data, {
+    ...stamped,
+    title: 'Personal mail',
+    updatedAt: '2025-01-01T00:00:00.000Z',
+  })
+  assert.equal(
+    renamed.entries[0]?.passwordUpdatedAt,
+    '2020-01-01T00:00:00.000Z',
+    'renaming does not reset password age',
+  )
+
+  const changed = upsertEntry(renamed, {
+    ...renamed.entries[0]!,
+    password: 'second-password',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  })
+  assert.equal(
+    changed.entries[0]?.passwordUpdatedAt,
+    '2026-01-01T00:00:00.000Z',
+    'changing the password stamps it',
+  )
+
+  const ignored = upsertEntry(changed, {
+    ...changed.entries[0]!,
+    auditIgnored: true,
+    updatedAt: '2026-02-01T00:00:00.000Z',
+  })
+  assert.equal(ignored.entries[0]?.auditIgnored, true)
+  assert.equal(
+    ignored.entries[0]?.passwordUpdatedAt,
+    '2026-01-01T00:00:00.000Z',
+    'audit ignore is not a password change',
+  )
+
+  const withoutStamp = { ...ignored.entries[0]! }
+  delete withoutStamp.passwordUpdatedAt
+  const preserved = upsertEntry(ignored, {
+    ...withoutStamp,
+    title: 'Personal mail again',
+    updatedAt: '2026-03-01T00:00:00.000Z',
+  })
+  assert.equal(
+    preserved.entries[0]?.passwordUpdatedAt,
+    '2026-01-01T00:00:00.000Z',
+    'an edit that omits the timestamp keeps the existing password age',
+  )
+
+  const parsed = entrySchema.parse({ ...ignored.entries[0], twoFactor: 'unavailable' })
+  assert.equal(parsed.twoFactor, 'unavailable')
+  assert.throws(() => entrySchema.parse({ ...ignored.entries[0], twoFactor: 'maybe' }))
+})
+
+test('restoring history keeps the password age unless the password itself changes', () => {
+  const current = newEntry('login', {
+    title: 'History age',
+    password: 'current-password',
+  })
+  current.passwordUpdatedAt = '2025-06-01T00:00:00.000Z'
+  current.updatedAt = '2026-01-01T00:00:00.000Z'
+  const notesOnly = {
+    ...current,
+    notes: 'older note',
+    updatedAt: '2025-05-01T00:00:00.000Z',
+    passwordUpdatedAt: '2024-01-01T00:00:00.000Z',
+  }
+  const notesData = {
+    ...emptyVault(),
+    entries: [current],
+    history: { [current.id]: [notesOnly] },
+  }
+  const notesRestored = restoreVersion(notesData, current.id, notesOnly.updatedAt)
+  assert.equal(
+    notesRestored.entries[0]?.passwordUpdatedAt,
+    '2025-06-01T00:00:00.000Z',
+    'restoring a note does not reset the password age',
+  )
+
+  const olderPassword = {
+    ...current,
+    password: 'older-password',
+    updatedAt: '2025-04-01T00:00:00.000Z',
+  }
+  const passwordData = {
+    ...emptyVault(),
+    entries: [current],
+    history: { [current.id]: [olderPassword] },
+  }
+  const passwordRestored = restoreVersion(passwordData, current.id, olderPassword.updatedAt)
+  assert.equal(passwordRestored.entries[0]?.password, 'older-password')
+  assert.notEqual(
+    passwordRestored.entries[0]?.passwordUpdatedAt,
+    '2025-06-01T00:00:00.000Z',
+    'restoring an older password resets its age',
+  )
 })
 
 test('login avatars resolve familiar platform brands from URLs and titles', () => {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   dismissReceivedRecipientShareFn,
   listReceivedRecipientSharesFn,
@@ -12,6 +12,7 @@ import {
 } from '~/lib/share'
 import { openShareKeyFromRecipient } from '~/lib/recipient-share'
 import { friendlyError, useVault } from '~/lib/vault-context'
+import { entryFingerprint, newEntry, upsertEntry, type Entry } from '~/lib/vault'
 import { Icon, Modal, Spinner, cx, useCopyToClipboard } from './ui'
 import { BrandIcon, brandForEntry } from './BrandIcon'
 
@@ -136,16 +137,33 @@ function WebsiteLink({ url }: { url: string }) {
   )
 }
 
+function sharedLoginEntry(payload: SharePayload, ownerHandle: string): Entry {
+  const entry = newEntry('login', {
+    title: payload.title,
+    username: payload.username,
+    password: payload.password,
+    url: payload.url,
+    notes: `Shared by ${ownerHandle}`,
+    twoFactor: 'unavailable',
+  })
+  entry.tags = ['shared']
+  return entry
+}
+
 function ShareDetail({
   item,
   onBack,
   onDismiss,
+  onAdd,
   dismissing,
+  alreadyInVault,
 }: {
   item: ReceivedItem
   onBack: () => void
   onDismiss: () => void
+  onAdd: () => void
   dismissing: boolean
+  alreadyInVault: boolean
 }) {
   const payload = item.payload
   if (!payload) {
@@ -205,18 +223,29 @@ function ShareDetail({
         {payload.url && <WebsiteLink url={payload.url} />}
       </div>
 
-      <div className="mt-4 flex items-center justify-between gap-3 border-t border-line pt-3">
-        <p className="text-[10.5px] leading-relaxed text-faint">
-          This item stays read-only. It is not added to your vault.
+      <div className="mt-4 border-t border-line pt-3">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="btn-primary h-8 flex-1 px-2.5 text-[12px]"
+            onClick={onAdd}
+            disabled={alreadyInVault}
+          >
+            <Icon name={alreadyInVault ? 'check' : 'plus'} size={13} />
+            {alreadyInVault ? 'Already in your vault' : 'Add to my vault'}
+          </button>
+          <button
+            type="button"
+            className="shrink-0 text-[11px] font-medium text-danger hover:underline disabled:opacity-45"
+            onClick={onDismiss}
+            disabled={dismissing}
+          >
+            Remove
+          </button>
+        </div>
+        <p className="mt-2 text-[10.5px] leading-relaxed text-faint">
+          Shares expire after three days. Add this login to keep it permanently.
         </p>
-        <button
-          type="button"
-          className="shrink-0 text-[11px] font-medium text-danger hover:underline disabled:opacity-45"
-          onClick={onDismiss}
-          disabled={dismissing}
-        >
-          Remove
-        </button>
       </div>
     </div>
   )
@@ -225,11 +254,15 @@ function ShareDetail({
 export function ReceivedSharesDialog({
   open,
   onClose,
+  onSeen,
+  onAdded,
 }: {
   open: boolean
   onClose: () => void
+  onSeen?: (ids: string[]) => void
+  onAdded?: (entry: Entry) => void
 }) {
-  const { ensureIdentity, handle } = useVault()
+  const { ensureIdentity, handle, data, mutate } = useVault()
   const [items, setItems] = useState<ReceivedItem[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -237,6 +270,10 @@ export function ReceivedSharesDialog({
   const [dismissingId, setDismissingId] = useState<string | null>(null)
   const [reload, setReload] = useState(0)
   const [now, setNow] = useState(() => Date.now())
+  const onSeenRef = useRef(onSeen)
+  useEffect(() => {
+    onSeenRef.current = onSeen
+  }, [onSeen])
 
   useEffect(() => {
     if (!open) return
@@ -282,7 +319,10 @@ export function ReceivedSharesDialog({
             }
           }),
         )
-        if (active) setItems(opened)
+        if (active) {
+          setItems(opened)
+          onSeenRef.current?.(opened.map((item) => item.share.id))
+        }
       } catch (cause) {
         if (active) setError(friendlyError(cause))
       } finally {
@@ -312,6 +352,38 @@ export function ReceivedSharesDialog({
 
   const selected = items.find((item) => item.share.id === selectedId) ?? null
   const activeItems = items.filter((item) => item.expiresAt > now)
+  const sharedEntry = useMemo(
+    () =>
+      selected?.payload
+        ? sharedLoginEntry(selected.payload, selected.share.ownerHandle)
+        : null,
+    [selected?.payload, selected?.share.ownerHandle],
+  )
+  const selectedAlreadyInVault = useMemo(
+    () =>
+      sharedEntry
+        ? Boolean(
+            data?.entries.some(
+              (entry) => entryFingerprint(entry) === entryFingerprint(sharedEntry),
+            ),
+          )
+        : false,
+    [data?.entries, sharedEntry],
+  )
+
+  function addToVault(item: ReceivedItem) {
+    if (!item.payload) return
+    const entry = sharedLoginEntry(item.payload, item.share.ownerHandle)
+    if (
+      data?.entries.some(
+        (existing) => entryFingerprint(existing) === entryFingerprint(entry),
+      )
+    ) {
+      return
+    }
+    mutate((current) => upsertEntry(current, entry))
+    onAdded?.(entry)
+  }
 
   useEffect(() => {
     if (!selectedId) return
@@ -332,7 +404,9 @@ export function ReceivedSharesDialog({
           item={selected}
           onBack={() => setSelectedId(null)}
           onDismiss={() => void dismiss(selected.share.id)}
+          onAdd={() => addToVault(selected)}
           dismissing={dismissingId === selected.share.id}
+          alreadyInVault={selectedAlreadyInVault}
         />
       ) : loading ? (
         <div className="flex items-center justify-center gap-2 py-12 text-[12px] text-muted">

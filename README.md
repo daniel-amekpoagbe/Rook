@@ -292,10 +292,12 @@ npm run test:e2e   # build, start a disposable server, and run every Playwright 
 
 The Playwright suite lives in `e2e/` and runs in CI. It covers register → save → reload
 locks → wrong password rejected → correct password decrypts → generator, import and
-duplicate detection, history/trash, sharing (two accounts, ciphertext-only rows, recipient
-inbox, per-recipient revocation, expiry, master-password rotation, legacy-link read
-compatibility, long and password-only items, and mobile), two-tab conflict
-merge/keep/use-server, and a WebAuthn passkey flow using Chromium's virtual authenticator.
+duplicate detection, history/trash, the theme-aware lock screen, list grouping/filtering,
+modal focus and inert behavior, audit actions, bulk trash actions, sharing (two accounts,
+ciphertext-only rows, recipient inbox, unread notifications, add-to-vault, per-recipient
+revocation, expiry, master-password rotation, legacy-link read compatibility, long and
+password-only items, and mobile), two-tab conflict merge/keep/use-server, and a WebAuthn
+passkey flow using Chromium's virtual authenticator.
 The passkey flow runs on `localhost` because WebAuthn RP IDs must be domain names; the rest of
 the suite stays on `127.0.0.1`.
 See `e2e/README.md` for running individual flows against an existing server.
@@ -355,15 +357,20 @@ The landing page is static HTML/CSS/JS in `landing/` and is deployed by
 `landing/index.html` with the repository variable `ROOK_APP_URL`, so the app URL is not
 committed.
 
-1. Push the repository to GitHub.
-2. In **Settings → Pages**, set **Source** to **GitHub Actions**.
-3. In **Settings → Secrets and variables → Actions → Variables**, add
-   `ROOK_APP_URL` with the full Vercel app URL, for example
-   `https://your-project.vercel.app`.
-4. Run the **Pages** workflow, or push a change under `landing/`.
+1. Push the repository to GitHub with `.github/workflows/pages.yml` and `landing/` on the
+   default branch. The workflow calls `actions/configure-pages` with `enablement: true`, so
+   it can switch the repository to the GitHub Actions Pages source on its own.
+2. In **Settings → Secrets and variables → Actions → Variables**, add `ROOK_APP_URL` with the
+   full Vercel app URL, for example `https://your-project.vercel.app`.
+3. Run the **Pages** workflow, or push a change under `landing/`.
 
-If `ROOK_APP_URL` is unset, the landing page still deploys but shows a setup message instead
-of a launch link. Set `ROOK_APP_URL` to the Vercel URL.
+The landing page is published at `https://<owner>.github.io/<repo>/`. The launch button is
+only as useful as `ROOK_APP_URL`: if it is unset, the page still deploys but shows a setup
+message instead of a launch link. The app itself must be deployed on Vercel (or another Node
+host); GitHub Pages only hosts the static landing page.
+
+> The workflow must be present on the repository's default branch before GitHub can run it.
+> Pushing only a feature branch does not publish the landing page.
 
 ---
 

@@ -228,9 +228,9 @@ export function LockScreen() {
     <div className="lock-screen relative min-h-dvh overflow-hidden bg-canvas">
       <ThemeToggle className="absolute top-5 right-5 z-20 border-line bg-surface text-muted shadow-rest hover:bg-surface-2 hover:text-ink" />
 
-      <div className="grid min-h-dvh w-full lg:grid-cols-[minmax(0,1fr)_350px]">
-        <main className="lock-login flex flex-col justify-center px-5 py-12 sm:px-8 lg:px-14 xl:px-20">
-          <div className="mx-auto w-full max-w-[400px]">
+      <div className="grid min-h-dvh w-full lg:grid-cols-[minmax(0,1fr)_420px]">
+        <main className="flex flex-col justify-center bg-surface px-5 py-12 sm:px-8 lg:order-2 lg:border-l lg:border-line lg:px-10">
+          <div className="mx-auto w-full max-w-[380px]">
             <div className="mb-9 lg:hidden">
               <BrandMark size="lg" />
               <p className="mt-3 max-w-[28ch] text-[13px] leading-relaxed text-muted">
@@ -509,13 +509,13 @@ export function LockScreen() {
           </div>
         </main>
 
-        <aside className="lock-guide hidden flex-col justify-center px-9 py-12 lg:flex">
+        <aside className="lock-guide mx-auto hidden w-full max-w-[560px] flex-col justify-center px-9 py-12 lg:order-1 lg:flex lg:px-14 xl:px-20">
           <span className="text-[10px] font-medium tracking-[0.12em] text-muted uppercase">Guide</span>
           <h2 className="mt-3 text-[22px] leading-tight font-medium tracking-[-0.025em] text-ink">
             How secure is my password?
           </h2>
           <div className="lock-guide-art mt-6 flex h-[150px] items-center justify-center rounded-sm border border-line">
-            <div className="flex size-24 items-center justify-center rounded-full border border-accent/25 bg-white/70 text-[#19233a] shadow-rest">
+            <div className="flex size-24 items-center justify-center rounded-full border border-accent/25 bg-surface/70 text-ink shadow-rest">
               <RookMark className="size-14" />
             </div>
           </div>

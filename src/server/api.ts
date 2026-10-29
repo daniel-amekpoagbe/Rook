@@ -532,6 +532,16 @@ export const listSentRecipientSharesFn = createServerFn({ method: 'GET' })
     return { shares: await db.listSentRecipientShares(user.id, data.entryId, now) }
   })
 
+export const listAllSentRecipientSharesFn = createServerFn({ method: 'GET' }).handler(
+  async () => {
+    const { db, session } = await store()
+    const user = await session.requireUser()
+    const now = Date.now()
+    await db.deleteExpiredRecipientShares(now)
+    return { shares: await db.listAllSentRecipientShares(user.id, now) }
+  },
+)
+
 export const listReceivedRecipientSharesFn = createServerFn({ method: 'GET' }).handler(
   async () => {
     const { db, session } = await store()
