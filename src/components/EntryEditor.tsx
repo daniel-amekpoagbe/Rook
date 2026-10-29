@@ -265,6 +265,8 @@ export function EntryForm({
   const [tagText, setTagText] = useState(entry.tags.join(', '))
   const [generatorOpen, setGeneratorOpen] = useState(initialGeneratorOpen)
   const [totpError, setTotpError] = useState<string | null>(null)
+  const hasTotp = draft.type === 'login' && Boolean(draft.totp?.trim() && parseTotp(draft.totp))
+  const twoFactorState = hasTotp ? 'on' : (draft.twoFactor ?? 'off')
 
   const set = <K extends keyof Entry>(key: K, value: Entry[K]) =>
     setDraft((prev) => ({ ...prev, [key]: value }))
@@ -286,7 +288,6 @@ export function EntryForm({
       return
     }
     setTotpError(null)
-    const hasTotp = draft.type === 'login' && Boolean(draft.totp?.trim() && parseTotp(draft.totp))
     onSave({
       ...draft,
       title,
@@ -469,11 +470,12 @@ export function EntryForm({
                         <button
                           key={value}
                           type="button"
-                          aria-pressed={(draft.twoFactor ?? 'off') === value}
+                          aria-pressed={twoFactorState === value}
                           onClick={() => set('twoFactor', value)}
+                          disabled={hasTotp && value !== 'on'}
                           className={cx(
-                            'h-7 rounded px-2 text-[11.5px] font-medium transition-colors',
-                            (draft.twoFactor ?? 'off') === value
+                            'h-7 rounded px-2 text-[11.5px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40',
+                            twoFactorState === value
                               ? 'bg-accent-soft text-accent'
                               : 'text-muted hover:text-ink',
                           )}
@@ -483,6 +485,12 @@ export function EntryForm({
                       ))}
                     </div>
                   </div>
+                  {hasTotp && (
+                    <p className="mt-2 text-[10.5px] leading-relaxed text-faint">
+                      A TOTP secret is stored, so this login is treated as 2FA on. Clear the secret
+                      to mark it off or not offered.
+                    </p>
+                  )}
                   <label className="mt-2.5 flex cursor-pointer items-center gap-2 border-t border-line pt-2.5 text-[11.5px] text-muted">
                     <input
                       type="checkbox"
