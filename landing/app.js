@@ -33,6 +33,6 @@ function disableLaunches() {
   }
 
   if (note) {
-    note.textContent = 'The hosted app is being deployed. Check back shortly.'
+    note.textContent = 'The hosted app link is not configured yet. Self-host it from the repository.'
   }
 }
