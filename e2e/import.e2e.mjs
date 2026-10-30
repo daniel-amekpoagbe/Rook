@@ -60,13 +60,8 @@ try {
   console.log('• duplicate import skipped')
 
   await page.reload({ waitUntil: 'networkidle' })
-  await page.waitForSelector('input[name="handle"]', { timeout: 30000 })
-  await page.fill('input[name="handle"]', HANDLE)
-  await page.fill('input[name="master-password"]', MASTER)
-  await page.locator('form').getByRole('button', { name: 'Unlock' }).click()
-  await page.waitForSelector('text=Select an item', { timeout: 180000 })
-  await page.waitForSelector('text=GitHub', { timeout: 10000 })
-  console.log('• imported entry survives lock/unlock')
+  await page.waitForSelector('text=GitHub', { timeout: 20000 })
+  console.log('• imported entry stays available after refresh')
 
   if (errors.length > 0) {
     console.log('CONSOLE ERRORS:')

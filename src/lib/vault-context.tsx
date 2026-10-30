@@ -16,6 +16,7 @@ import {
   deriveAuthKey,
   deriveMasterKey,
   deriveVaultKey,
+  KEY_BYTES,
   newKdfConfig,
   type KdfConfig,
 } from './crypto'
@@ -181,6 +182,87 @@ function isRetryableSaveError(error: unknown): boolean {
 interface Secrets {
   masterKey: Uint8Array
   vaultKey: Uint8Array
+}
+
+const TAB_SESSION_KEY = 'rook.tabSession'
+
+interface TabSession {
+  handle: string
+  masterKey: string
+  vaultKey: string
+  kdf: KdfConfig
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary)
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+  return bytes
+}
+
+function isKdfConfig(value: unknown): value is KdfConfig {
+  if (!value || typeof value !== 'object') return false
+  const kdf = value as KdfConfig
+  return (
+    kdf.algorithm === 'argon2id' &&
+    typeof kdf.salt === 'string' &&
+    kdf.salt.length > 0 &&
+    Number.isInteger(kdf.t) &&
+    Number.isInteger(kdf.m) &&
+    Number.isInteger(kdf.p)
+  )
+}
+
+function readTabSession(): TabSession | null {
+  try {
+    const raw = sessionStorage.getItem(TAB_SESSION_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<TabSession>
+    if (
+      typeof parsed.handle !== 'string' ||
+      typeof parsed.masterKey !== 'string' ||
+      typeof parsed.vaultKey !== 'string' ||
+      !isKdfConfig(parsed.kdf)
+    ) {
+      return null
+    }
+    return {
+      handle: parsed.handle,
+      masterKey: parsed.masterKey,
+      vaultKey: parsed.vaultKey,
+      kdf: parsed.kdf,
+    }
+  } catch {
+    return null
+  }
+}
+
+function writeTabSession(secrets: Secrets, kdf: KdfConfig, handle: string) {
+  try {
+    const payload: TabSession = {
+      handle,
+      masterKey: bytesToBase64(secrets.masterKey),
+      vaultKey: bytesToBase64(secrets.vaultKey),
+      kdf,
+    }
+    sessionStorage.setItem(TAB_SESSION_KEY, JSON.stringify(payload))
+  } catch {
+    // A blocked or full session store still leaves this page unlocked.
+  }
+}
+
+function clearTabSession() {
+  try {
+    sessionStorage.removeItem(TAB_SESSION_KEY)
+  } catch {
+    // Locking still wipes the in-memory key when storage is unavailable.
+  }
 }
 
 function currentAuthHash(secrets: Secrets): string {
@@ -398,28 +480,12 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('rook.autoLockMinutes', String(clamped))
   }, [])
 
-  // Bootstrap the session once. This must never clobber a vault that was already
-  // unlocked while the request was in flight (e.g. a fast register on a slow link).
-  useEffect(() => {
-    let cancelled = false
-    const settle = (nextHandle: string | null) => {
-      if (cancelled) return
-      setHandle((prev) => {
-        const next = prev ?? nextHandle
-        handleRef.current = next
-        return next
-      })
-      setStatus((prev) => (prev === 'booting' ? 'locked' : prev))
-    }
-    meFn()
-      .then((result) => settle(result.handle))
-      .catch(() => settle(null))
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  const finishUnlockRef = useRef<
+    ((masterKey: Uint8Array, kdf: KdfConfig, userHandle: string) => Promise<void>) | null
+  >(null)
 
   const lock = useCallback(() => {
+    clearTabSession()
     clearPendingPasskey()
     clearSaveRetry()
     retryAttemptRef.current = 0
@@ -781,6 +847,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         setStatus('unlocked')
         setSync('saved')
         setLastSyncedAt(remote.updatedAt)
+        writeTabSession({ masterKey, vaultKey }, kdf, normalizedHandle)
         void loadIdentity(normalizedHandle, vaultKey).catch(() => {
           // Sharing is optional for unlocking. The next share action retries.
         })
@@ -792,6 +859,77 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     },
     [clearSaveRetry, loadIdentity],
   )
+
+  finishUnlockRef.current = finishUnlock
+
+  // A refresh keeps this tab unlocked. The key stays in sessionStorage, never
+  // on the server, and lock, sign-out, auto-lock, and closing the tab clear it.
+  useEffect(() => {
+    let cancelled = false
+    const settleLocked = (nextHandle: string | null) => {
+      if (cancelled) return
+      setHandle((prev) => {
+        const next = prev ?? nextHandle
+        handleRef.current = next
+        return next
+      })
+      setStatus((prev) => (prev === 'booting' ? 'locked' : prev))
+    }
+
+    const resume = async () => {
+      const stored = readTabSession()
+      let sessionHandle: string | null = null
+      try {
+        const result = await meFn()
+        sessionHandle = result.handle
+      } catch {
+        sessionHandle = null
+      }
+      if (cancelled) return
+
+      const normalizedSession = sessionHandle?.trim().toLowerCase() ?? null
+      const sameAccount =
+        stored !== null && normalizedSession !== null && stored.handle === normalizedSession
+      if (!sameAccount) {
+        if (stored) clearTabSession()
+        settleLocked(sessionHandle)
+        return
+      }
+
+      let masterKey: Uint8Array
+      let vaultKey: Uint8Array
+      try {
+        masterKey = base64ToBytes(stored.masterKey)
+        vaultKey = base64ToBytes(stored.vaultKey)
+      } catch {
+        clearTabSession()
+        settleLocked(sessionHandle)
+        return
+      }
+      if (masterKey.length !== KEY_BYTES || vaultKey.length !== KEY_BYTES) {
+        masterKey.fill(0)
+        vaultKey.fill(0)
+        clearTabSession()
+        settleLocked(sessionHandle)
+        return
+      }
+      vaultKey.fill(0)
+
+      try {
+        await finishUnlockRef.current?.(masterKey, stored.kdf, stored.handle)
+      } catch {
+        if (!cancelled) {
+          clearTabSession()
+          settleLocked(sessionHandle)
+        }
+      }
+    }
+
+    void resume()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const register = useCallback(async (userHandle: string, password: string) => {
     setError(null)
@@ -831,6 +969,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     setStatus('unlocked')
     setSync('saved')
     setLastSyncedAt(Date.now())
+    writeTabSession({ masterKey, vaultKey }, kdf, result.handle)
     void loadIdentity(result.handle, vaultKey).catch(() => {
       // The account exists even if identity setup is delayed. Retry on demand.
     })
@@ -978,6 +1117,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       wipe(secretsRef.current)
       secretsRef.current = { masterKey: nextMaster, vaultKey: nextVaultKey }
       kdfRef.current = nextKdf
+      writeTabSession(secretsRef.current, nextKdf, handle)
       versionRef.current = result.version
       setSync('saved')
       setLastSyncedAt(result.updatedAt)

@@ -105,7 +105,7 @@ try {
   console.log('• merge kept items from both tabs')
 
   await pageA.reload({ waitUntil: 'networkidle' })
-  await unlock(pageA)
+  await pageA.waitForSelector('input[aria-label="Search vault"]', { timeout: 20000 })
   await waitForItem(pageA, A1)
   await waitForItem(pageA, A2)
   await waitForItem(pageA, B1)

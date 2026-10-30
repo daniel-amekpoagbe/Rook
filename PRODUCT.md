@@ -23,7 +23,7 @@ The master password is stretched with Argon2id in the browser, split with HKDF i
 - A browser tab on a personal machine, usually open beside the site being logged into.
 - Short, repeated sessions: unlock, search, copy a password or TOTP code, lock.
 - Occasional longer sessions for adding items, rotating passwords, running the audit, and sharing a login with another Rook account.
-- Node server with SQLite locally and Supabase PostgreSQL in production on Vercel; the vault is decrypted only in memory and locks on reload.
+- Node server with SQLite locally and Supabase PostgreSQL in production on Vercel. The vault is decrypted only in the browser. Refreshing the same tab keeps it unlocked; lock, sign out, auto-lock, and closing the tab clear the key.
 - Keyboard use is normal: `Cmd/Ctrl+K` for search, `Cmd/Ctrl+L` to lock.
 
 ## Capabilities and Constraints

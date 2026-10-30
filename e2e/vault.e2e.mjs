@@ -96,8 +96,12 @@ try {
   await page.screenshot({ path: artifactPath('e2e-vault.png') })
 
   await page.reload({ waitUntil: 'networkidle' })
+  await page.waitForSelector('text=Select an item', { timeout: 20000 })
+  log('reload keeps the vault unlocked')
+
+  await page.getByRole('button', { name: 'Lock vault' }).click()
   await page.waitForSelector('input[name="handle"]', { timeout: 20000 })
-  log('reload returns to the locked state')
+  log('explicit lock returns to the lock screen')
 
   await page.fill('input[name="handle"]', HANDLE)
   await page.fill('input[name="master-password"]', 'definitely-the-wrong-password')

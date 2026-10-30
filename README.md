@@ -201,7 +201,7 @@ certs/                         Supabase pooler root certificate
 e2e/                           Playwright flows
 ```
 
-The vault provider is mounted in the root shell. A provider inside a route is remounted when the router invalidates, which would drop the in-memory key. Saves run immediately and one at a time. A delayed save is a lost save if the tab closes.
+The vault provider is mounted in the root shell. A refresh keeps the unlocked vault in `sessionStorage` for this tab only. Lock, sign out, auto-lock, and closing the tab remove it. The key is never sent to the server. Saves run immediately and one at a time. A delayed save is a lost save if the tab closes.
 
 ## Contributing
 

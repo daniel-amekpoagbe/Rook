@@ -15,14 +15,6 @@ page.on('console', (message) => {
 })
 page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`))
 
-async function unlock() {
-  await page.waitForSelector('input[name="handle"]', { timeout: 30000 })
-  await page.fill('input[name="handle"]', HANDLE)
-  await page.fill('input[name="master-password"]', MASTER)
-  await page.locator('form').getByRole('button', { name: 'Unlock vault' }).click()
-  await page.waitForSelector('input[aria-label="Search vault"]', { timeout: 180000 })
-}
-
 async function openTrash() {
   await page.getByRole('button', { name: /^Trash, \d+ items?$/ }).click()
 }
@@ -83,7 +75,7 @@ try {
   console.log('• item moved to trash')
 
   await page.reload({ waitUntil: 'networkidle' })
-  await unlock()
+  await page.waitForSelector('input[aria-label="Search vault"]', { timeout: 20000 })
   await page.getByRole('button', { name: /^Trash, 1 item$/ }).click()
   await page.getByRole('button', { name: new RegExp(TITLE) }).click()
   await page.getByRole('button', { name: 'Restore', exact: true }).click()

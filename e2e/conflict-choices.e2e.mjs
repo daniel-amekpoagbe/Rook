@@ -88,7 +88,7 @@ async function runScenario(choice, expected, absent) {
     }
 
     await pageA.reload({ waitUntil: 'networkidle' })
-    await unlock(pageA)
+    await pageA.waitForSelector('input[aria-label="Search vault"]', { timeout: 20000 })
     for (const title of expected) {
       if (!(await visible(pageA, title))) throw new Error(`${choice}: fresh tab A is missing ${title}`)
     }
