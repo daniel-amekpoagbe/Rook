@@ -11,8 +11,11 @@ import {
   SiBitwarden,
   SiBluesky,
   SiBookingdotcom,
+  SiClaude,
   SiCloudflare,
   SiCoinbase,
+  SiCursor,
+  SiDeepseek,
   SiDigitalocean,
   SiDiscord,
   SiDocker,
@@ -22,19 +25,29 @@ import {
   SiEtsy,
   SiFigma,
   SiGithub,
+  SiGithubcopilot,
   SiGitlab,
+  SiGooglegemini,
+  SiHuggingface,
+  SiInstagram,
   SiJira,
   SiLinear,
   SiMastodon,
   SiMedium,
+  SiMetaai,
+  SiMistralai,
   SiNetflix,
   SiNetlify,
   SiNotion,
   SiNpm,
+  SiOllama,
   SiPaypal,
+  SiPerplexity,
   SiPinterest,
+  SiPoe,
   SiProton,
   SiReddit,
+  SiReplicate,
   SiRoblox,
   SiShopify,
   SiSignal,
@@ -67,8 +80,12 @@ export type Brand =
   | 'bitwarden'
   | 'bluesky'
   | 'booking'
+  | 'claude'
   | 'cloudflare'
   | 'coinbase'
+  | 'copilot'
+  | 'cursor'
+  | 'deepseek'
   | 'digitalocean'
   | 'discord'
   | 'docker'
@@ -78,25 +95,35 @@ export type Brand =
   | 'etsy'
   | 'facebook'
   | 'figma'
+  | 'gemini'
   | 'github'
   | 'gitlab'
   | 'gmail'
   | 'google'
+  | 'grok'
+  | 'huggingface'
   | 'instagram'
   | 'jira'
   | 'linear'
   | 'linkedin'
   | 'mastodon'
   | 'medium'
+  | 'metaai'
   | 'microsoft'
+  | 'mistral'
   | 'netflix'
   | 'netlify'
   | 'notion'
   | 'npm'
+  | 'ollama'
+  | 'openai'
   | 'paypal'
+  | 'perplexity'
   | 'pinterest'
+  | 'poe'
   | 'proton'
   | 'reddit'
+  | 'replicate'
   | 'roblox'
   | 'shopify'
   | 'signal'
@@ -129,6 +156,7 @@ interface BrandDefinition {
 // Gmail and Jira are intentionally listed before their parent brands so the
 // more specific match wins for hosts such as mail.google.com and jira.example.
 const BRANDS: BrandDefinition[] = [
+  { id: 'gemini', domains: ['gemini.google.com'], aliases: ['gemini'] },
   { id: 'gmail', domains: ['gmail.com', 'googlemail.com', 'mail.google.com'], aliases: ['gmail', 'google mail'] },
   {
     id: 'google',
@@ -137,9 +165,11 @@ const BRANDS: BrandDefinition[] = [
   },
   { id: 'youtube', domains: ['youtube.com', 'youtu.be', 'youtube-nocookie.com'], aliases: ['youtube'] },
   { id: 'instagram', domains: ['instagram.com', 'instagr.am'], aliases: ['instagram', 'insta'] },
+  { id: 'metaai', domains: ['meta.ai'], aliases: ['meta ai'] },
   { id: 'facebook', domains: ['facebook.com', 'fb.com', 'messenger.com'], aliases: ['facebook', 'messenger', 'meta'] },
   { id: 'x', domains: ['x.com', 'twitter.com', 't.co'], aliases: ['x', 'twitter'] },
   { id: 'github', domains: ['github.com', 'github.io', 'githubusercontent.com'], aliases: ['github'] },
+  { id: 'copilot', domains: ['copilot.microsoft.com', 'githubcopilot.com'], aliases: ['github copilot', 'copilot'] },
   {
     id: 'microsoft',
     domains: [
@@ -208,7 +238,22 @@ const BRANDS: BrandDefinition[] = [
   { id: 'telegram', domains: ['telegram.org', 'telegram.me', 't.me'], aliases: ['telegram'] },
   { id: 'signal', domains: ['signal.org', 'signal.me'], aliases: ['signal'] },
   { id: 'proton', domains: ['proton.me', 'protonmail.com', 'protonvpn.com', 'proton.com'], aliases: ['proton', 'protonmail', 'proton mail', 'proton vpn'] },
-  { id: 'anthropic', domains: ['anthropic.com', 'claude.ai'], aliases: ['anthropic', 'claude'] },
+  {
+    id: 'openai',
+    domains: ['openai.com', 'chatgpt.com', 'chat.openai.com'],
+    aliases: ['openai', 'open ai', 'chatgpt', 'chat gpt'],
+  },
+  { id: 'claude', domains: ['claude.ai'], aliases: ['claude'] },
+  { id: 'anthropic', domains: ['anthropic.com'], aliases: ['anthropic'] },
+  { id: 'grok', domains: ['grok.com', 'grok.x.ai', 'x.ai'], aliases: ['grok', 'xai'] },
+  { id: 'huggingface', domains: ['huggingface.co', 'hf.co'], aliases: ['hugging face', 'huggingface'] },
+  { id: 'perplexity', domains: ['perplexity.ai'], aliases: ['perplexity'] },
+  { id: 'mistral', domains: ['mistral.ai'], aliases: ['mistral'] },
+  { id: 'deepseek', domains: ['deepseek.com'], aliases: ['deepseek', 'deep seek'] },
+  { id: 'cursor', domains: ['cursor.com', 'cursor.sh'], aliases: ['cursor'] },
+  { id: 'ollama', domains: ['ollama.com', 'ollama.ai'], aliases: ['ollama'] },
+  { id: 'replicate', domains: ['replicate.com'], aliases: ['replicate'] },
+  { id: 'poe', domains: ['poe.com'], aliases: ['poe'] },
   { id: 'docker', domains: ['docker.com', 'docker.io'], aliases: ['docker'] },
   { id: 'npm', domains: ['npmjs.com', 'npmjs.org'], aliases: ['npm'] },
   { id: 'bitwarden', domains: ['bitwarden.com'], aliases: ['bitwarden'] },
@@ -252,8 +297,12 @@ const BRAND_THEME: Record<Brand, BrandTheme> = {
   bitwarden: { color: '#175ddc', dark: '#6a9bff' },
   bluesky: { color: '#0285ff', dark: '#4aa8ff' },
   booking: { color: '#003580', dark: '#4a8bd9' },
+  claude: { color: '#d97757', dark: '#e8a088' },
   cloudflare: { color: '#f38020', dark: '#ff9a4d' },
   coinbase: { color: '#0052ff', dark: '#5c8dff' },
+  copilot: { color: '#111827', dark: '#f5f5f7' },
+  cursor: { color: '#111827', dark: '#f5f5f7' },
+  deepseek: { color: '#4d6bfe', dark: '#8aa0ff' },
   digitalocean: { color: '#0080ff', dark: '#4aa8ff' },
   discord: { color: '#5865f2', dark: '#7b84ff' },
   docker: { color: '#2496ed', dark: '#5cb8ff' },
@@ -263,25 +312,35 @@ const BRAND_THEME: Record<Brand, BrandTheme> = {
   etsy: { color: '#f16521', dark: '#ff8a4d' },
   facebook: { color: '#1877f2', dark: '#4a9bff' },
   figma: { color: '#f24e1e', dark: '#ff7a4d' },
+  gemini: { color: '#1a73e8', dark: '#8ab4ff' },
   github: { color: '#24292f', dark: '#e6edf3' },
   gitlab: { color: '#fc6d26', dark: '#ff8f52' },
   gmail: { color: '#ea4335', dark: '#ff6b5e' },
   google: { color: '#4285f4', dark: '#6ba0ff' },
-  instagram: { color: '#d946ef', dark: '#e879f9' },
+  grok: { color: '#111827', dark: '#f5f5f7' },
+  huggingface: { color: '#e6a100', dark: '#ffd21e' },
+  instagram: { color: '#d62976', dark: '#f56aa0' },
   jira: { color: '#0052cc', dark: '#4c9aff' },
   linear: { color: '#5e6ad2', dark: '#8b96ff' },
   linkedin: { color: '#0a66c2', dark: '#4a9bff' },
   mastodon: { color: '#6364ff', dark: '#8b8bff' },
   medium: { color: '#111827', dark: '#f5f5f7' },
+  metaai: { color: '#0668e1', dark: '#4a9bff' },
   microsoft: { color: '#f25022', dark: '#ff7a4d' },
+  mistral: { color: '#ff7000', dark: '#ff9a4d' },
   netflix: { color: '#e50914', dark: '#ff4d5a' },
   netlify: { color: '#00b3a4', dark: '#3ee0d2' },
   notion: { color: '#111827', dark: '#f5f5f7' },
   npm: { color: '#cb3837', dark: '#ff6b70' },
+  ollama: { color: '#111827', dark: '#f5f5f7' },
+  openai: { color: '#111827', dark: '#f5f5f7' },
   paypal: { color: '#003087', dark: '#4a8bd9' },
+  perplexity: { color: '#20808d', dark: '#5ec8d4' },
   pinterest: { color: '#bd081c', dark: '#ff4d5a' },
+  poe: { color: '#5d5cff', dark: '#9b99ff' },
   proton: { color: '#6d4aff', dark: '#9b7bff' },
   reddit: { color: '#ff4500', dark: '#ff7a4d' },
+  replicate: { color: '#111827', dark: '#f5f5f7' },
   roblox: { color: '#111827', dark: '#f5f5f7' },
   shopify: { color: '#7ab55c', dark: '#a8d95a' },
   signal: { color: '#3a76f0', dark: '#6b9bff' },
@@ -317,8 +376,12 @@ const BRAND_ICONS: Partial<Record<Brand, IconType>> = {
   bitwarden: SiBitwarden,
   bluesky: SiBluesky,
   booking: SiBookingdotcom,
+  claude: SiClaude,
   cloudflare: SiCloudflare,
   coinbase: SiCoinbase,
+  copilot: SiGithubcopilot,
+  cursor: SiCursor,
+  deepseek: SiDeepseek,
   digitalocean: SiDigitalocean,
   discord: SiDiscord,
   docker: SiDocker,
@@ -327,20 +390,29 @@ const BRAND_ICONS: Partial<Record<Brand, IconType>> = {
   epicgames: SiEpicgames,
   etsy: SiEtsy,
   figma: SiFigma,
+  gemini: SiGooglegemini,
   github: SiGithub,
   gitlab: SiGitlab,
+  huggingface: SiHuggingface,
+  instagram: SiInstagram,
   jira: SiJira,
   linear: SiLinear,
   mastodon: SiMastodon,
   medium: SiMedium,
+  metaai: SiMetaai,
+  mistral: SiMistralai,
   netflix: SiNetflix,
   netlify: SiNetlify,
   notion: SiNotion,
   npm: SiNpm,
+  ollama: SiOllama,
   paypal: SiPaypal,
+  perplexity: SiPerplexity,
   pinterest: SiPinterest,
+  poe: SiPoe,
   proton: SiProton,
   reddit: SiReddit,
+  replicate: SiReplicate,
   roblox: SiRoblox,
   shopify: SiShopify,
   signal: SiSignal,
@@ -414,19 +486,23 @@ function CustomLogo({ brand, ...props }: { brand: Brand } & SVGProps<SVGSVGEleme
           <path fill="#fbbc05" d="M22 17.4V9.4l-6 4.4v6.2h3.4a2.6 2.6 0 0 0 2.6-2.6Z" />
         </svg>
       )
-    case 'instagram':
+    case 'openai':
       return (
         <svg viewBox="0 0 24 24" {...props}>
-          <defs>
-            <linearGradient id="rook-instagram-gradient" x1="0" x2="1" y1="1" y2="0">
-              <stop stopColor="#feda75" />
-              <stop offset=".45" stopColor="#d62976" />
-              <stop offset="1" stopColor="#4f5bd5" />
-            </linearGradient>
-          </defs>
-          <rect x="3" y="3" width="18" height="18" rx="5" fill="url(#rook-instagram-gradient)" />
-          <circle cx="12" cy="12" r="4.25" fill="none" stroke="white" strokeWidth="1.8" />
-          <circle cx="17.25" cy="6.8" r="1.1" fill="white" />
+          <path
+            fill="currentColor"
+            d="M22.282 9.821a5.985 5.985 0 0 0-.516-4.91 6.046 6.046 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a5.985 5.985 0 0 0-3.998 2.9 6.046 6.046 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.051 6.051 0 0 0 6.515 2.9A5.985 5.985 0 0 0 13.26 24a6.056 6.056 0 0 0 5.772-4.206 5.99 5.99 0 0 0 3.997-2.9 6.056 6.056 0 0 0-.747-7.073Zm-9.022 12.608a4.476 4.476 0 0 1-2.876-1.04l.142-.081 4.778-2.758a.795.795 0 0 0 .393-.681v-6.737l2.02 1.168a.071.071 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.495 4.494Zm-9.66-4.125a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.771.771 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646ZM2.34 7.896a4.485 4.485 0 0 1 2.366-1.973V11.6a.766.766 0 0 0 .388.677l5.814 3.354-2.02 1.169a.076.076 0 0 1-.071 0l-4.83-2.787A4.504 4.504 0 0 1 2.34 7.872Zm16.597 3.855L13.104 8.364 15.12 7.2a.076.076 0 0 1 .07 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.104v-5.677a.79.79 0 0 0-.407-.667Zm2.01-3.023-.142-.085-4.773-2.782a.776.776 0 0 0-.785 0L9.409 9.23V6.897a.066.066 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66ZM8.307 12.863l-2.02-1.164a.08.08 0 0 1-.038-.057V6.074a4.5 4.5 0 0 1 7.376-3.453l-.142.08L8.704 5.46a.795.795 0 0 0-.393.681Zm1.097-2.365 2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5Z"
+          />
+        </svg>
+      )
+    case 'grok':
+      return (
+        <svg viewBox="0 0 163.53 163.53" {...props}>
+          <path
+            fill="currentColor"
+            fillRule="evenodd"
+            d="M20 0h123.53a20 20 0 0 1 20 20v123.53a20 20 0 0 1-20 20H20a20 20 0 0 1-20-20V20A20 20 0 0 1 20 0Zm85.02 34.51L38.72 129.19h19.96l66.26-94.68H105.02Z"
+          />
         </svg>
       )
     case 'youtube':
