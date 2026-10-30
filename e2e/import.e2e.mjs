@@ -30,7 +30,7 @@ try {
   console.log('• temp vault created')
 
   await page.getByRole('button', { name: 'Settings', exact: true }).click()
-  await page.waitForSelector('text=Import from another manager', { timeout: 10000 })
+  await page.waitForSelector('text=Add items from a Chrome, 1Password, Bitwarden, or Rook file.', { timeout: 10000 })
   await page.setInputFiles('input[aria-label="Import CSV or JSON file"]', {
     name: 'chrome.csv',
     mimeType: 'text/csv',
@@ -48,7 +48,7 @@ try {
   console.log('• imported entry visible in the vault')
 
   await page.getByRole('button', { name: 'Settings', exact: true }).click()
-  await page.waitForSelector('text=Import from another manager', { timeout: 10000 })
+  await page.waitForSelector('text=Add items from a Chrome, 1Password, Bitwarden, or Rook file.', { timeout: 10000 })
   await page.setInputFiles('input[aria-label="Import CSV or JSON file"]', {
     name: 'chrome.csv',
     mimeType: 'text/csv',

@@ -22,7 +22,6 @@ Rook has not been independently audited. Keep another copy of anything you canno
 | Local database | SQLite through `node:sqlite` |
 | Production database | PostgreSQL through `pg`, hosted on Supabase |
 | App hosting | Vercel (Nitro `vercel` preset) |
-| Landing page | Static HTML, CSS, and JS on GitHub Pages |
 | Tests | Node.js test runner via `tsx`, Playwright |
 
 Supabase is the PostgreSQL host. Rook does not use Supabase Auth, because the master password must never be sent to the server.
@@ -176,8 +175,6 @@ On Vercel, the first account can be created and further registration then stays 
 
 `npm run build` is the Vercel build. Vercel sets `VERCEL=1`, which selects the Nitro `vercel` preset. Local builds use the `node-server` preset so `npm start` can run `.output/server/index.mjs`.
 
-The landing page in `landing/` is deployed by `.github/workflows/pages.yml`. Set the repository variable `ROOK_APP_URL` to the Vercel app URL. The workflow writes that URL into the launch button. GitHub Pages does not run the app.
-
 ## Project layout
 
 ```
@@ -200,7 +197,6 @@ src/server/webauthn.server.ts  WebAuthn ceremonies and recovery codes
 src/server/session.server.ts   Cookie sessions
 src/components/                Lock screen, vault, editor, audit, settings, sharing
 src/routes/                    App shell and the older public share page
-landing/                       GitHub Pages landing page
 certs/                         Supabase pooler root certificate
 e2e/                           Playwright flows
 ```
