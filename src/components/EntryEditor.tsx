@@ -169,7 +169,6 @@ export function GeneratorModal({
           className="w-full accent-[var(--primary)]"
           aria-label="Password length"
         />
-        <p className="mt-1 text-[11px] text-faint">Longer is stronger. 20+ characters is a good default.</p>
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-2">
@@ -199,14 +198,14 @@ export function GeneratorModal({
         ))}
       </div>
 
-      <label className="mt-3 flex cursor-pointer items-center gap-2 text-[12px] text-muted">
+      <label className="mt-3 flex cursor-pointer items-center gap-2 text-[12px] text-muted select-none">
         <input
           type="checkbox"
           checked={options.avoidAmbiguous}
           onChange={() => toggle('avoidAmbiguous')}
           className="size-3.5 accent-[var(--primary)]"
         />
-        Avoid look-alike characters (O/0, l/1)
+        Avoid look-alikes
       </label>
 
       <div className="mt-5 flex justify-end gap-2 border-t border-line pt-4">
@@ -324,7 +323,6 @@ export function EntryForm({
             <Icon name="arrowLeft" size={17} />
           </button>
           <span className="chip">{meta.label}</span>
-          <span className="truncate text-[12px] text-muted">{entry.id ? 'Editing item' : `New ${meta.label.toLowerCase()}`}</span>
         </div>
         <div className="flex items-center gap-2">
           <button type="button" className="btn-secondary h-9 px-2.5 text-[12px] sm:h-8" onClick={onCancel}>
@@ -366,7 +364,6 @@ export function EntryForm({
                   onChange={(event) => setTagText(event.target.value)}
                   placeholder="e.g. work, personal"
                 />
-                <p className="mt-1 text-[11px] text-faint">Separate tags with commas.</p>
               </div>
             </div>
           </Section>
@@ -440,21 +437,13 @@ export function EntryForm({
                   {totpError ? (
                     <p className="mt-1 text-[11px] text-danger">{totpError}</p>
                   ) : (
-                    <p className="mt-1 text-[11px] text-faint">
-                      Base32 secret from your provider, or an otpauth:// URI. The secret is encrypted
-                      with the rest of this item.
-                    </p>
+                    <p className="mt-1 text-[11px] text-faint">Base32 secret or an otpauth:// link.</p>
                   )}
                 </div>
 
                 <div className="rounded-lg border border-line bg-surface-2 px-3 py-2.5">
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                      <p className="text-[12px] font-medium text-ink">Two-factor authentication</p>
-                      <p className="mt-0.5 text-[11px] leading-relaxed text-faint">
-                        Tell the audit whether this login can use 2FA.
-                      </p>
-                    </div>
+                    <p className="text-[12px] font-medium text-ink">Two-factor authentication</p>
                     <div
                       role="group"
                       aria-label="Two-factor authentication"
@@ -486,10 +475,7 @@ export function EntryForm({
                     </div>
                   </div>
                   {hasTotp && (
-                    <p className="mt-2 text-[10.5px] leading-relaxed text-faint">
-                      A TOTP secret is stored, so this login is treated as 2FA on. Clear the secret
-                      to mark it off or not offered.
-                    </p>
+                    <p className="mt-2 text-[11px] text-faint">A secret is saved, so this stays on.</p>
                   )}
                   <label className="mt-2.5 flex cursor-pointer items-center gap-2 border-t border-line pt-2.5 text-[11.5px] text-muted">
                     <input
@@ -628,12 +614,12 @@ export function EntryForm({
               className="field h-auto min-h-28 resize-y py-2 leading-relaxed"
               value={draft.notes ?? ''}
               onChange={(event) => set('notes', event.target.value)}
-              placeholder={draft.type === 'note' ? 'Encrypted at rest like every other field.' : 'Optional'}
+              placeholder="Optional"
             />
           </Section>
 
           <p className="text-center text-[11px] text-faint">
-            <span className="kbd">⌘</span> <span className="kbd">↵</span> to save · encrypted before it leaves this tab
+            <span className="kbd">⌘</span> <span className="kbd">↵</span> to save
           </p>
         </div>
       </div>

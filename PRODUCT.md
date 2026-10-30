@@ -16,7 +16,7 @@ A zero-knowledge personal password manager. It stores logins, secure notes, card
 
 ## Positioning
 
-An original implementation, not a clone: the master password is stretched with Argon2id in the browser, split with HKDF into an auth key and a vault key, and the server holds only opaque ciphertext, public keys, and a hash of a hash. Recipient-bound sharing uses P-256 ECDH envelopes, so the server never receives a share key or a recipient private key. No master-password recovery path exists by design. An optional WebAuthn passkey can add a second factor to Rook's own sign-in; its one-time recovery code can bypass that factor, never the vault key.
+The master password is stretched with Argon2id in the browser, split with HKDF into an auth key and a vault key, and the server holds only opaque ciphertext, public keys, and a hash of a hash. Recipient-bound sharing uses P-256 ECDH envelopes, so the server never receives a share key or a recipient private key. No master-password recovery path exists by design. An optional WebAuthn passkey can add a second factor to Rook's own sign-in; its one-time recovery code can bypass that factor, never the vault key.
 
 ## Operating Context
 
@@ -32,9 +32,9 @@ An original implementation, not a clone: the master password is stretched with A
 - Item history (last 20 versions) and trash, both encrypted with the vault; restore a version, restore a deleted item, or remove it permanently.
 - Permanent-delete tombstones: a deletion survives conflict merges, so a stale tab or stale vault copy cannot silently resurrect the item. Permanent deletion also revokes the item's recipient shares best-effort.
 - Save conflicts are explicit: merge items from both versions, keep this tab's version, or load the server version. Local edits stay encrypted and in memory until the choice is made.
-- Share a login's title, username, password, and website with another Rook account by handle. The recipient needs a Rook account and must unlock it once to publish a P-256 identity public key. The owner's browser wraps a random 32-byte share key to that public key with ephemeral P-256 ECDH + HKDF-SHA256 + XChaCha20-Poly1305; the server stores only ciphertext and the envelope. Shares expire after three days, the owner can list and revoke each recipient independently, and the recipient's "Shared with me" inbox decrypts client-side. Shared items are read-only. Limits: 50 active shares per owner, 20 per item.
+- Share a login's title, username, password, and website with a link. No recipient name is required. The browser seals the payload with a random 32-byte key that stays in the URL fragment; the server stores only ciphertext. Anyone with the full link can view and copy the login. They cannot edit it or save it into a vault from the share. Links expire after three days, and the owner can revoke each one from the item or from Shared by me. Limits: 50 active links per owner, 20 per item.
 - Account identity: P-256 ECDH. The PKCS8 private key is sealed under the vault key and stored server-side only as ciphertext; the public key is a server-visible directory entry. Master-password rotation re-wraps the private key atomically with the vault and auth verifier.
-- Existing bearer links remain readable until their original expiry, but new link creation has been removed.
+- A share link is read-only. It shows the login and copy controls, and it does not grant edit access to the vault item.
 - Client-side Argon2id (64 MiB, t=3, p=1), HKDF-SHA256 key split, XChaCha20-Poly1305 vault encryption with the KDF header bound as AAD.
 - Vault data version 6 is current. Older versions 2–5 open and migrate; version 5 attachment metadata is discarded on read.
 - Optional WebAuthn passkey second factor for Rook's own sign-in. Once a passkey is registered, the master password alone cannot start a session. Adding the first passkey shows a recovery code once; removing the last passkey turns the factor off and discards the code.
@@ -53,7 +53,7 @@ An original implementation, not a clone: the master password is stretched with A
 - The mark is a solid chess rook in three rounded pieces: crown, neck, base. A rook is a
   castle and a watchful corvid; the brand should feel quiet, guarded, and precise rather than
   playful or aggressive.
-- Original code, naming, and vault format. Never copy 1Password's implementation, branding, or visual identity.
+- The name, mark, and vault format are Rook's own.
 - The product speaks plainly about security. It never implies a recovery path it does not have: the vault key has no recovery, and a passkey recovery code only bypasses the passkey second factor.
 
 ## Evidence on Hand

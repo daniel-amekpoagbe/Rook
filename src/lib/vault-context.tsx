@@ -88,7 +88,7 @@ interface ConflictSnapshot {
 }
 
 const ERROR_MESSAGES: Record<string, string> = {
-  HANDLE_TAKEN: 'That username is already taken.',
+  REGISTRATION_CLOSED: 'New vaults are closed on this server.',
   INVALID_CREDENTIALS: 'Wrong master password.',
   RATE_LIMITED: 'Too many attempts. Try again in a few minutes.',
   UNAUTHENTICATED: 'Your session expired. Unlock again.',
@@ -183,6 +183,15 @@ interface Secrets {
   vaultKey: Uint8Array
 }
 
+function currentAuthHash(secrets: Secrets): string {
+  const authKey = deriveAuthKey(secrets.masterKey)
+  try {
+    return authProof(authKey)
+  } finally {
+    authKey.fill(0)
+  }
+}
+
 interface SaveWaiter {
   resolve: () => void
   reject: (error: unknown) => void
@@ -249,7 +258,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const [conflict, setConflict] = useState<VaultConflict | null>(null)
   const [pendingPasskey, setPendingPasskey] = useState<PendingPasskey | null>(null)
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null)
-  const [autoLockMinutes, setAutoLockMinutesState] = useState(5)
+  const [autoLockMinutes, setAutoLockMinutesState] = useState(60)
 
   const secretsRef = useRef<Secrets | null>(null)
   const dataRef = useRef<VaultData | null>(null)
@@ -525,6 +534,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
           const result = await pushVaultFn({
             data: {
               baseVersion: versionRef.current,
+              authHash: currentAuthHash(secrets),
               ciphertext: sealed.ciphertext,
               nonce: sealed.nonce,
             },
@@ -676,6 +686,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         const result = await pushVaultFn({
           data: {
             baseVersion: snapshot.remoteVersion,
+            authHash: currentAuthHash(secrets),
             ciphertext: sealed.ciphertext,
             nonce: sealed.nonce,
           },

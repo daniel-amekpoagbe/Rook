@@ -4,9 +4,8 @@
  * OWN-WORLD  Cool gray chrome, white work surfaces, hairline borders, Inter,
  *            and one action blue that only marks something pressable or chosen.
  * STORY  Unlock, find the item in seconds, copy the secret, lock, leave.
- * FIRST VIEWPORT  Split lock screen: promise and trust facts on the left, a
- *                 white sign-in card on the right; the vault opens as rail,
- *                 list, and detail with search always in reach.
+ * FIRST VIEWPORT  Lock photograph fills the screen. Sign-in sits on the image, with no panel.
+ *                 The vault opens as rail, list, and detail with search in reach.
  * FORM  Familiar SaaS canon, sitting alongside 1Password 8 + Bitwarden.
  *       Convention is the commitment; no ironic quirks.
  */
@@ -274,10 +273,49 @@
   }
 }
 
-.lock-guide-art {
+.lock-screen {
+  --ink: #f6f3ee;
+  --ink-2: rgb(246 243 238 / 0.74);
+  --ink-3: rgb(246 243 238 / 0.5);
+  --hairline: rgb(255 255 255 / 0.16);
+}
+
+.lock-screen-photo {
+  position: absolute;
+  inset: 0;
   background:
-    linear-gradient(135deg, color-mix(in oklab, var(--surface) 65%, transparent), transparent 55%),
-    var(--surface-2);
+    linear-gradient(100deg, rgb(8 10 16 / 0.78) 0%, rgb(10 12 18 / 0.58) 42%, rgb(8 10 16 / 0.46) 100%),
+    url('/lock-bg.jpg') center / cover no-repeat;
+}
+
+[data-theme='dark'] .lock-screen-photo {
+  background:
+    linear-gradient(100deg, rgb(6 8 12 / 0.84) 0%, rgb(8 10 14 / 0.66) 46%, rgb(6 8 12 / 0.54) 100%),
+    url('/lock-bg.jpg') center / cover no-repeat;
+}
+
+.lock-field {
+  background: rgb(255 255 255 / 0.88);
+  border-color: rgb(255 255 255 / 0.55);
+  color: #17191e;
+  box-shadow: none;
+  backdrop-filter: blur(16px);
+}
+
+.lock-field::placeholder {
+  color: rgb(23 25 30 / 0.42);
+}
+
+.lock-field:hover,
+.lock-field:focus {
+  background: rgb(255 255 255 / 0.96);
+  border-color: white;
+}
+
+[data-theme='dark'] .lock-field,
+[data-theme='dark'] .lock-field:hover,
+[data-theme='dark'] .lock-field:focus {
+  color: #17191e;
 }
 
 .share-shell {

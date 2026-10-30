@@ -41,20 +41,11 @@ try {
   await page.goto(BASE, { waitUntil: 'networkidle' })
   await page.waitForSelector('input[name="handle"]', { timeout: 20000 })
 
-  const light = await page.evaluate(() => ({
-    root: getComputedStyle(document.querySelector('.lock-screen')).backgroundColor,
-    main: getComputedStyle(document.querySelector('main')).backgroundColor,
-  }))
-  await page.getByRole('button', { name: 'Switch to dark theme' }).click()
-  await page.waitForTimeout(250)
-  const dark = await page.evaluate(() => ({
-    root: getComputedStyle(document.querySelector('.lock-screen')).backgroundColor,
-    main: getComputedStyle(document.querySelector('main')).backgroundColor,
-  }))
-  assert(light.main !== dark.main, `lock main did not change theme: ${light.main} / ${dark.main}`)
-  assert(light.root !== dark.root, `lock canvas did not change theme: ${light.root} / ${dark.root}`)
-  console.log('• lock screen honors light/dark theme', light, dark)
-  await page.getByRole('button', { name: 'Switch to light theme' }).click()
+  assert(
+    (await page.getByRole('button', { name: /Switch to (dark|light) theme/ }).count()) === 0,
+    'lock screen still shows the theme toggle',
+  )
+  console.log('• lock screen has no theme toggle')
 
   await page.getByRole('button', { name: 'Create vault', exact: true }).click()
   await page.waitForSelector('input[name="confirm-password"]')

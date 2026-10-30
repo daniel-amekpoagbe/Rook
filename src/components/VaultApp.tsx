@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useVault, type ConflictChoice } from '~/lib/vault-context'
 import { parseTotp } from '~/lib/totp'
-import { listReceivedRecipientSharesFn } from '~/server/api'
 import {
   hostOf,
   matchesQuery,
@@ -20,7 +19,6 @@ import {
 import { AuditModal } from './AuditPanel'
 import { AuthenticatorModal } from './AuthenticatorModal'
 import { EntryForm, GeneratorModal, TYPE_META, newDraft } from './EntryEditor'
-import { ReceivedSharesDialog } from './ReceivedSharesDialog'
 import { SentSharesDialog } from './SentSharesDialog'
 import { SettingsModal } from './SettingsPanel'
 import { ShareDialog } from './ShareDialog'
@@ -89,7 +87,7 @@ function FieldRow({
   const { copied, copy } = useCopyToClipboard()
 
   return (
-    <div className="group flex items-start justify-between gap-4 border-b border-line px-4 py-3 last:border-0">
+    <div className="flex items-start justify-between gap-4 border-b border-line px-4 py-3 last:border-0">
       <div className="min-w-0 flex-1">
         <div className="text-[11.5px] font-medium text-muted">{label}</div>
         <div
@@ -114,7 +112,7 @@ function FieldRow({
           )}
         </div>
       </div>
-      <div className="flex shrink-0 items-center gap-0.5 pt-1 opacity-100 transition-opacity sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100">
+      <div className="flex shrink-0 items-center gap-0.5 pt-1">
         {secret && (
           <button
             type="button"
@@ -174,12 +172,10 @@ function EntryDetail({
           <button type="button" className="icon-btn md:hidden" onClick={onBack} aria-label="Back to list">
             <Icon name="arrowLeft" size={17} />
           </button>
+          <button type="button" className="icon-btn hidden md:inline-flex" onClick={onBack} aria-label="Close item">
+            <Icon name="close" size={16} />
+          </button>
           <span className="chip">{trashed ? 'Trash' : meta.label}</span>
-          <span className="hidden text-[11.5px] text-faint sm:inline">
-            {trashed
-              ? `Deleted ${timeAgo(new Date(entry.deletedAt ?? entry.updatedAt).getTime())}`
-              : `Updated ${timeAgo(new Date(entry.updatedAt).getTime())}`}
-          </span>
         </div>
         <div className="flex items-center gap-1">
           {trashed ? (
@@ -234,76 +230,53 @@ function EntryDetail({
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-[660px] px-4 py-6 sm:px-6">
           {trashed && (
-            <div className="mb-5 rounded-lg border border-warn/25 bg-warn/5 px-3 py-2.5 text-[11.5px] leading-relaxed text-muted">
-              This item is in the trash. Restore it to edit it or return it to your vault.
+            <div className="mb-5 rounded-lg border border-warn/25 bg-warn/5 px-3 py-2.5 text-[12px] text-muted">
+              In the trash. Restore it to edit.
             </div>
           )}
-          <div className="flex items-start gap-4">
-            <EntryAvatar entry={entry} size={48} />
-            <div className="min-w-0 flex-1">
-              <h2 className="truncate text-[24px] leading-tight font-semibold tracking-[-0.025em]">{entry.title}</h2>
-              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted">
-                {host ? (
-                  <a
-                    href={entry.url?.includes('://') ? entry.url : `https://${entry.url}`}
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    className="inline-flex items-center gap-1 font-mono hover:text-accent"
-                  >
-                    <Icon name="globe" size={12} />
-                    {host}
-                  </a>
-                ) : (
-                  <span>{meta.label}</span>
-                )}
-                {entry.username && <span className="max-w-[28ch] truncate">{entry.username}</span>}
-                {entry.type === 'login' && entry.password && (
-                  <span className="chip normal-case tracking-normal">
-                    {entry.twoFactor === 'on' || (entry.totp && parseTotp(entry.totp))
-                      ? '2FA on'
-                      : entry.twoFactor === 'unavailable'
-                        ? 'No 2FA offered'
-                        : '2FA off'}
-                  </span>
-                )}
-              </div>
+          <div className="flex items-center gap-3.5">
+            <EntryAvatar entry={entry} size={44} />
+            <div className="min-w-0">
+              <h2 className="truncate text-[22px] leading-tight font-semibold tracking-[-0.02em]">{entry.title}</h2>
+              {host && (
+                <a
+                  href={entry.url?.includes('://') ? entry.url : `https://${entry.url}`}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="mt-1 inline-flex max-w-full items-center gap-1 truncate font-mono text-[12px] text-muted hover:text-accent"
+                >
+                  {host}
+                  <Icon name="arrowUpRight" size={11} className="shrink-0 text-faint" />
+                </a>
+              )}
             </div>
           </div>
 
-          <div className="mt-5 flex flex-wrap gap-2">
-            {entry.type === 'login' && entry.password && (
-              <button type="button" className="btn-primary" onClick={() => copy(entry.password!, 'password')}>
-                <Icon name={copied === 'password' ? 'check' : 'copy'} size={14} />
-                {copied === 'password' ? 'Copied' : 'Copy password'}
-              </button>
-            )}
-            {!trashed && entry.type === 'login' && entry.password && onShare && (
-              <button type="button" className="btn-secondary" onClick={onShare}>
-                <Icon name="mail" size={14} /> Share
-              </button>
-            )}
-            {entry.url && (
-              <a
-                className="btn-secondary"
-                href={entry.url.includes('://') ? entry.url : `https://${entry.url}`}
-                target="_blank"
-                rel="noreferrer noopener"
-              >
-                <Icon name="globe" size={14} /> Open website
-                <Icon name="arrowUpRight" size={12} className="text-faint" />
-              </a>
-            )}
-            {entry.type === 'login' && entry.username && (
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={() => copy(entry.username!, 'username')}
-              >
-                <Icon name={copied === 'username' ? 'check' : 'copy'} size={14} />
-                {copied === 'username' ? 'Copied' : 'Copy username'}
-              </button>
-            )}
-          </div>
+          {(entry.type === 'login' && entry.password) || entry.url ? (
+            <div className="mt-4 flex flex-wrap gap-2">
+              {entry.type === 'login' && entry.password && (
+                <button type="button" className="btn-primary" onClick={() => copy(entry.password!, 'password')}>
+                  <Icon name={copied === 'password' ? 'check' : 'copy'} size={14} />
+                  {copied === 'password' ? 'Copied' : 'Copy password'}
+                </button>
+              )}
+              {!trashed && entry.type === 'login' && entry.password && onShare && (
+                <button type="button" className="btn-secondary" onClick={onShare}>
+                  <Icon name="share" size={14} /> Share
+                </button>
+              )}
+              {entry.url && (
+                <a
+                  className="btn-secondary"
+                  href={entry.url.includes('://') ? entry.url : `https://${entry.url}`}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                >
+                  <Icon name="globe" size={14} /> Open
+                </a>
+              )}
+            </div>
+          ) : null}
 
           <div className="mt-6">
             {entry.type === 'login' && (
@@ -389,9 +362,6 @@ function EntryDetail({
                     </div>
                   ))}
                 </div>
-                <p className="mt-1.5 text-[11px] leading-relaxed text-faint">
-                  Previous versions stay encrypted with the vault. Restoring one keeps the current version in history.
-                </p>
               </div>
             )}
 
@@ -455,11 +425,7 @@ export function VaultApp() {
   const [deleteTarget, setDeleteTarget] = useState<Entry | null>(null)
   const [deleteForeverTarget, setDeleteForeverTarget] = useState<Entry | null>(null)
   const [shareTarget, setShareTarget] = useState<Entry | null>(null)
-  const [receivedOpen, setReceivedOpen] = useState(false)
   const [sentOpen, setSentOpen] = useState(false)
-  const [receivedIds, setReceivedIds] = useState<string[]>([])
-  const [receivedUnread, setReceivedUnread] = useState(0)
-  const [receivedNoticeDismissed, setReceivedNoticeDismissed] = useState(false)
   const [trashSelection, setTrashSelection] = useState<Set<string>>(new Set())
   const [bulkAction, setBulkAction] = useState<'delete' | 'empty' | null>(null)
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -514,46 +480,6 @@ export function VaultApp() {
   useEffect(() => {
     if (filter !== 'trash') setTrashSelection(new Set())
   }, [filter])
-
-  useEffect(() => {
-    if (!handle) return
-    let cancelled = false
-
-    async function refreshReceived() {
-      try {
-        const result = await listReceivedRecipientSharesFn()
-        if (cancelled) return
-        const active = result.shares.filter((share) => share.expiresAt > Date.now())
-        setReceivedIds(active.map((share) => share.id))
-        let seen: string[] = []
-        try {
-          seen = JSON.parse(localStorage.getItem(`rook.seenShares.${handle}`) ?? '[]') as string[]
-        } catch {
-          seen = []
-        }
-        const seenSet = new Set(seen)
-        setReceivedUnread(active.filter((share) => !seenSet.has(share.id)).length)
-      } catch {
-        // Sharing is additive; a transient failure must not interrupt the vault.
-      }
-    }
-
-    void refreshReceived()
-    const timer = window.setInterval(refreshReceived, 60_000)
-    const onFocus = () => void refreshReceived()
-    window.addEventListener('focus', onFocus)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-      window.removeEventListener('focus', onFocus)
-    }
-  }, [handle])
-
-  useEffect(() => {
-    // A newly received share should surface its notification again, even if
-    // the previous one was dismissed.
-    if (receivedUnread > 0) setReceivedNoticeDismissed(false)
-  }, [receivedUnread])
 
   const visible = useMemo(() => {
     const source = filter === 'trash' ? trash : entries
@@ -683,34 +609,6 @@ export function VaultApp() {
 
   function setAuditIgnored(entry: Entry, ignored: boolean) {
     saveEntry({ ...entry, auditIgnored: ignored }, false)
-  }
-
-  function markReceivedSeen(ids: string[] = receivedIds) {
-    if (!handle) return
-    let seen: string[] = []
-    try {
-      seen = JSON.parse(localStorage.getItem(`rook.seenShares.${handle}`) ?? '[]') as string[]
-    } catch {
-      seen = []
-    }
-    const active = new Set([...receivedIds, ...ids])
-    const merged = [...new Set([...seen, ...ids])]
-    // Prune shares that are no longer active so the local marker cannot grow
-    // forever. Keep the list untouched until at least one share is known.
-    const next = active.size > 0 ? merged.filter((id) => active.has(id)) : merged
-    try {
-      localStorage.setItem(`rook.seenShares.${handle}`, JSON.stringify(next))
-    } catch {
-      // A private-mode storage failure should not block the share inbox.
-    }
-    setReceivedUnread(0)
-  }
-
-  function openReceivedShares() {
-    // The inbox marks shares as seen only after they load, so a transient
-    // network failure does not clear the unread badge.
-    setReceivedOpen(true)
-    setRailOpen(false)
   }
 
   const selectedTrash = trash.filter((entry) => trashSelection.has(entry.id))
@@ -917,20 +815,6 @@ export function VaultApp() {
               {authenticatorCount > 0 && (
                 <span className="font-mono text-[10.5px] text-faint tabular-nums">
                   {authenticatorCount}
-                </span>
-              )}
-            </button>
-            <button
-              type="button"
-              className="nav-item"
-              onClick={openReceivedShares}
-              aria-label={`Shared with me${receivedUnread > 0 ? `, ${receivedUnread} unread` : ''}`}
-            >
-              <Icon name="mail" size={16} className="text-faint" />
-              <span className="flex-1 text-left">Shared with me</span>
-              {receivedUnread > 0 && (
-                <span className="rounded-full bg-accent px-1.5 py-0.5 text-[10px] font-semibold leading-none text-on-accent tabular-nums">
-                  {receivedUnread}
                 </span>
               )}
             </button>
@@ -1458,15 +1342,6 @@ export function VaultApp() {
           handle={handle}
         />
       )}
-      <ReceivedSharesDialog
-        open={receivedOpen}
-        onClose={() => setReceivedOpen(false)}
-        onSeen={markReceivedSeen}
-        onAdded={(entry) => {
-          setReceivedOpen(false)
-          openEntry(entry)
-        }}
-      />
       <SentSharesDialog
         open={sentOpen}
         onClose={() => setSentOpen(false)}
@@ -1476,43 +1351,6 @@ export function VaultApp() {
           openEntry(entry)
         }}
       />
-
-      {receivedUnread > 0 && !receivedNoticeDismissed && (
-        <div
-          role="status"
-          className="fixed right-4 bottom-4 z-50 flex w-[min(360px,calc(100vw-2rem))] items-start gap-3 rounded-xl border border-line bg-surface p-3 shadow-float"
-        >
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-accent">
-            <Icon name="mail" size={15} />
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="text-[12.5px] font-medium text-ink">
-              {receivedUnread} new shared {receivedUnread === 1 ? 'item' : 'items'}
-            </p>
-            <p className="mt-0.5 text-[11px] leading-relaxed text-muted">
-              Someone shared a login with you. Review it in your inbox.
-            </p>
-            <button
-              type="button"
-              className="btn-primary mt-2 h-7 px-2 text-[11px]"
-              onClick={() => {
-                setReceivedNoticeDismissed(true)
-                openReceivedShares()
-              }}
-            >
-              Review
-            </button>
-          </div>
-          <button
-            type="button"
-            className="icon-btn size-7 shrink-0"
-            aria-label="Dismiss notification"
-            onClick={() => setReceivedNoticeDismissed(true)}
-          >
-            <Icon name="close" size={13} />
-          </button>
-        </div>
-      )}
 
       <Modal
         open={Boolean(deleteTarget)}

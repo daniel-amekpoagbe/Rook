@@ -145,7 +145,7 @@ function ReadyCard({ payload, expiresAt }: { payload: SharePayload; expiresAt: n
 
   return (
     <div className="share-ready rise">
-      <div className="share-expiry">You can view this item until {formatShareExpiry(expiresAt)}</div>
+      <div className="share-expiry">Read only · available until {formatShareExpiry(expiresAt)}</div>
       <div className="share-card-body">
         <div className="share-intro">
           <span className="share-entry-icon" aria-hidden="true">

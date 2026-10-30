@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import { listAllSentRecipientSharesFn, revokeRecipientShareFn } from '~/server/api'
+import {
+  listAllSentRecipientSharesFn,
+  listSentSharesFn,
+  revokeRecipientShareFn,
+  revokeShareFn,
+} from '~/server/api'
 import { formatShareRemaining } from '~/lib/share'
 import { friendlyError } from '~/lib/vault-context'
 import type { Entry } from '~/lib/vault'
@@ -9,9 +14,10 @@ import { BrandIcon, brandCssVars, brandForEntry } from './BrandIcon'
 interface SentShare {
   id: string
   entryId: string
-  recipientHandle: string
+  label: string
   expiresAt: number
   createdAt: number
+  kind: 'link' | 'person'
 }
 
 function ShareEntryIcon({ entry }: { entry: Entry | undefined }) {
@@ -56,9 +62,27 @@ export function SentSharesDialog({
     let cancelled = false
     setLoading(true)
     setError(null)
-    listAllSentRecipientSharesFn()
-      .then((result) => {
-        if (!cancelled) setShares(result.shares)
+    Promise.all([listSentSharesFn(), listAllSentRecipientSharesFn()])
+      .then(([links, people]) => {
+        if (cancelled) return
+        setShares([
+          ...links.shares.map((share) => ({
+            id: share.id,
+            entryId: share.entryId,
+            label: 'Read-only link',
+            expiresAt: share.expiresAt,
+            createdAt: share.createdAt,
+            kind: 'link' as const,
+          })),
+          ...people.shares.map((share) => ({
+            id: share.id,
+            entryId: share.entryId,
+            label: share.recipientHandle,
+            expiresAt: share.expiresAt,
+            createdAt: share.createdAt,
+            kind: 'person' as const,
+          })),
+        ])
       })
       .catch((caught) => {
         if (!cancelled) setError(friendlyError(caught))
@@ -87,7 +111,9 @@ export function SentSharesDialog({
     setRevoking(id)
     setError(null)
     try {
-      await revokeRecipientShareFn({ data: { id } })
+      const share = shares.find((item) => item.id === id)
+      if (share?.kind === 'link') await revokeShareFn({ data: { id } })
+      else await revokeRecipientShareFn({ data: { id } })
       setShares((prev) => prev.filter((share) => share.id !== id))
     } catch (caught) {
       setError(friendlyError(caught))
@@ -149,7 +175,7 @@ export function SentSharesDialog({
                       {entry?.title ?? 'Item no longer in this vault'}
                     </p>
                     <p className="text-[10.5px] text-faint">
-                      {entryShares.length} {entryShares.length === 1 ? 'recipient' : 'recipients'}
+                      {entryShares.length} {entryShares.length === 1 ? 'share' : 'shares'}
                     </p>
                   </div>
                   {entry && (
@@ -170,7 +196,7 @@ export function SentSharesDialog({
                       className="flex items-center gap-3 border-b border-line px-3 py-2.5 last:border-0"
                     >
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-[12px] text-ink">{share.recipientHandle}</p>
+                        <p className="truncate text-[12px] text-ink">{share.label}</p>
                         <p className="text-[10.5px] text-faint">
                           Expires {formatShareRemaining(share.expiresAt).toLowerCase()}
                         </p>

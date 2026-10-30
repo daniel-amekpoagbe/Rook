@@ -56,7 +56,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     importEntries,
     signOut,
     sync,
-    lastSyncedAt,
   } = useVault()
 
   const [current, setCurrent] = useState('')
@@ -74,7 +73,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const [passkeyBusy, setPasskeyBusy] = useState(false)
   const [passkeyError, setPasskeyError] = useState<string | null>(null)
   const [recoveryCode, setRecoveryCode] = useState<string | null>(null)
-  const [recoveryAvailable, setRecoveryAvailable] = useState(false)
   const [removePasskeyId, setRemovePasskeyId] = useState<string | null>(null)
   const [webauthnSupported, setWebauthnSupported] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -94,7 +92,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       .then((result) => {
         if (cancelled) return
         setPasskeys(result.passkeys)
-        setRecoveryAvailable(result.recoveryAvailable)
       })
       .catch((caught) => {
         if (!cancelled) setPasskeyError(friendlyError(caught))
@@ -118,12 +115,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       })
       const result = await finishPasskeyRegistrationFn({ data: { challengeId, response } })
       setPasskeys((prev) => [result.passkey, ...prev])
-      setRecoveryAvailable(true)
       if (result.recoveryCode) setRecoveryCode(result.recoveryCode)
-      setMessage({
-        tone: 'ok',
-        text: 'Passkey added. Your master password and passkey are now both required to unlock.',
-      })
+      setMessage({ tone: 'ok', text: 'Passkey added.' })
     } catch (caught) {
       setPasskeyError(friendlyError(caught))
     } finally {
@@ -140,12 +133,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       setPasskeys((prev) => prev.filter((passkey) => passkey.id !== removePasskeyId))
       setRemovePasskeyId(null)
       if (result.remaining === 0) {
-        setRecoveryAvailable(false)
         setRecoveryCode(null)
-        setMessage({
-          tone: 'ok',
-          text: 'Passkey verification is off. The recovery code was discarded.',
-        })
+        setMessage({ tone: 'ok', text: 'Passkeys are off.' })
       } else {
         setMessage({ tone: 'ok', text: 'Passkey removed.' })
       }
@@ -293,7 +282,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   }
 
   return (
-    <Sheet open={open} onClose={close} title="Settings" description="Account, security, and portability.">
+    <Sheet open={open} onClose={close} title="Settings">
       <Section title="Account">
         <div className="flex items-center justify-between gap-3 rounded-lg border border-line bg-surface-2 px-3 py-2.5">
           <div className="flex min-w-0 items-center gap-2.5">
@@ -320,7 +309,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         </div>
       </Section>
 
-      <Section title="Auto-lock" description="The in-memory key is wiped after this much inactivity.">
+      <Section title="Auto-lock">
         <div className="grid grid-cols-5 gap-1.5">
           {[1, 5, 15, 30, 60].map((minutes) => (
             <button
@@ -340,20 +329,14 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         </div>
       </Section>
 
-      <Section
-        title="Passkeys"
-        description="Require a passkey after your master password. The passkey proves this device to the server; your master password still derives the vault key."
-      >
+      <Section title="Passkeys">
         {recoveryCode && (
           <div className="mb-3 rounded-lg border border-warn/30 bg-warn/5 px-3 py-3">
             <div className="flex items-start gap-2">
               <Icon name="alert" size={15} className="mt-0.5 shrink-0 text-warn" />
               <div className="min-w-0 flex-1">
-                <p className="text-[12px] font-medium text-ink">Save your recovery code</p>
-                <p className="mt-0.5 text-[11px] leading-relaxed text-muted">
-                  It is shown once and cannot be retrieved. If you lose your passkey, this code is the only way to
-                  sign in. Store it offline.
-                </p>
+                <p className="text-[12px] font-medium text-ink">Save this recovery code</p>
+                <p className="mt-0.5 text-[11px] leading-relaxed text-muted">Shown once. Store it offline.</p>
                 <div className="mt-2 flex gap-2">
                   <input
                     readOnly
@@ -385,11 +368,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
 
         {passkeysLoading ? (
           <p className="text-[11.5px] text-muted">Loading passkeys…</p>
-        ) : passkeys.length === 0 ? (
-          <p className="text-[11.5px] leading-relaxed text-muted">
-            No passkeys yet. Add one to require a second factor after your master password.
-          </p>
-        ) : (
+        ) : passkeys.length > 0 ? (
           <div className="space-y-2">
             {passkeys.map((passkey) => (
               <div
@@ -402,22 +381,14 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   </span>
                   <div className="min-w-0">
                     <div className="truncate text-[12.5px] font-medium text-ink">{passkey.name}</div>
-                    <div className="text-[10.5px] leading-relaxed text-faint">
-                      Added{' '}
+                    <div className="text-[10.5px] text-faint">
                       {new Date(passkey.createdAt).toLocaleDateString(undefined, {
                         month: 'short',
                         day: 'numeric',
                         year: 'numeric',
                       })}
                       {' · '}
-                      {passkey.lastUsedAt
-                        ? `Last used ${new Date(passkey.lastUsedAt).toLocaleDateString(undefined, {
-                            month: 'short',
-                            day: 'numeric',
-                          })}`
-                        : 'Never used'}
-                      {' · '}
-                      {passkey.backedUp ? 'Synced passkey' : 'Device-bound passkey'}
+                      {passkey.backedUp ? 'Synced' : 'This device'}
                     </div>
                   </div>
                 </div>
@@ -454,12 +425,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               </div>
             ))}
           </div>
-        )}
+        ) : null}
 
         {removePasskeyId && passkeys.length === 1 && (
-          <p className="mt-2 text-[11px] leading-relaxed text-warn">
-            Removing the last passkey turns off passkey verification and discards your recovery code.
-          </p>
+          <p className="mt-2 text-[11px] text-warn">Removing the last passkey also discards its recovery code.</p>
         )}
 
         <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -477,17 +446,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           )}
         </div>
 
-        {recoveryAvailable && !recoveryCode && passkeys.length > 0 && (
-          <p className="mt-2 text-[11px] leading-relaxed text-faint">
-            A recovery code is on file. It was shown when you added your first passkey.
-          </p>
-        )}
-
-        <p className="mt-2 text-[11px] leading-relaxed text-faint">
-          Passkeys are tied to this origin. Use the same address (for example, localhost or your HTTPS domain) every
-          time. Private keys never leave your authenticator.
-        </p>
-
         {passkeyError && (
           <p role="alert" className="mt-2 text-[11px] leading-relaxed text-danger">
             {passkeyError}
@@ -495,7 +453,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         )}
       </Section>
 
-      <Section title="Change master password" description="Re-derives keys with a fresh salt and re-encrypts the vault.">
+      <Section title="Master password">
         <div className="space-y-2">
           <div>
             <label htmlFor="current-master-password" className="label">
@@ -552,7 +510,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         </div>
       </Section>
 
-      <Section title="Backup and portability">
+      <Section title="Backup" description="Save an encrypted copy, export a CSV, or restore a Rook backup.">
         <div className="flex flex-wrap gap-2">
           <button type="button" className="btn-secondary h-8 px-2.5 text-[12px]" onClick={backupEncrypted}>
             <Icon name="download" size={13} /> Encrypted backup
@@ -580,17 +538,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           />
         </div>
 
-        <p className="mt-2 text-[11px] leading-relaxed text-faint">
-          Encrypted backups contain the full vault, including item history and trash. Import merges
-          items by id and keeps the newest version of each item.
-        </p>
-
         {pendingCsv && (
           <div className="mt-3 rounded-lg border border-warn/25 bg-warn/5 px-3 py-2.5">
             <p className="text-[11.5px] leading-relaxed text-muted">
-              <span className="font-medium text-ink">Plain-text export.</span> The CSV contains every password
-              and authenticator secret unencrypted. Store it only somewhere you trust, and delete it
-              after use.
+              This CSV includes every password in plain text.
             </p>
             <div className="mt-2 flex gap-2">
               <button type="button" className="btn-secondary h-8 px-2.5 text-[12px]" onClick={() => setPendingCsv(false)}>
@@ -609,9 +560,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
 
         {pendingImport && (
           <div className="mt-3 rounded-lg border border-line bg-surface-2 px-3 py-2.5">
-            <p className="text-[11.5px] leading-relaxed text-muted">
-              <span className="font-medium text-ink">{pendingImport.file.name}</span> is encrypted. Enter the master
-              password used when it was created.
+            <p className="text-[11.5px] text-muted">
+              <span className="font-medium text-ink">{pendingImport.file.name}</span>
             </p>
             <div className="mt-2 flex flex-col gap-2 sm:flex-row">
               <input
@@ -649,17 +599,9 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             </div>
           </div>
         )}
-
-        <p className="mt-2 text-[11px] leading-relaxed text-faint">
-          The encrypted backup is a self-contained copy of the vault blob, including its KDF header. It is safe to store
-          anywhere you trust, as long as you remember the master password.
-        </p>
       </Section>
 
-      <Section
-        title="Import from another manager"
-        description="Bring logins, notes, cards, and identities over from Chrome, 1Password, or Bitwarden. Files are parsed in this tab and never uploaded."
-      >
+      <Section title="Import" description="Add items from a Chrome, 1Password, Bitwarden, or Rook file.">
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
@@ -725,38 +667,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             </div>
           </div>
         )}
-
-        <p className="mt-2 text-[11px] leading-relaxed text-faint">
-          Supported: Chrome CSV, 1Password CSV, Bitwarden JSON/CSV, and Rook CSV. Duplicate items are skipped by title,
-          username, and URL.
-        </p>
-      </Section>
-
-      <Section title="Storage" description="How this build keeps your data.">
-        <ul className="space-y-1.5 text-[11.5px] leading-relaxed text-muted">
-          <li className="flex gap-2">
-            <Icon name="check" size={13} className="mt-0.5 shrink-0 text-success" />
-            Vault blob: PostgreSQL on Supabase, encrypted before upload.
-          </li>
-          <li className="flex gap-2">
-            <Icon name="check" size={13} className="mt-0.5 shrink-0 text-success" />
-            Master password: never stored, never transmitted.
-          </li>
-          <li className="flex gap-2">
-            <Icon name="check" size={13} className="mt-0.5 shrink-0 text-success" />
-            Session: httpOnly cookie holding a random token; only its SHA-256 is stored.
-          </li>
-          <li className="flex gap-2">
-            <Icon name="check" size={13} className="mt-0.5 shrink-0 text-success" />
-            Passkeys: server stores public keys and a recovery-code hash; private keys never leave your authenticator.
-          </li>
-        </ul>
-        <div className="mt-2 font-mono text-[10.5px] text-faint">
-          Last save:{' '}
-          {lastSyncedAt
-            ? new Date(lastSyncedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
-            : '—'}
-        </div>
       </Section>
 
       {message && (

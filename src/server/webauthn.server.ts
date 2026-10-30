@@ -58,13 +58,25 @@ const VALID_TRANSPORTS = new Set<AuthenticatorTransportFuture>([
 
 function relyingParty(): { origin: string; rpID: string } {
   const headers = getRequestHeaders()
-  return resolveRelyingParty({
-    originOverride: process.env.ROOK_WEBAUTHN_ORIGIN,
-    rpIdOverride: process.env.ROOK_WEBAUTHN_RP_ID,
+  const originOverride = process.env.ROOK_WEBAUTHN_ORIGIN
+  const rpIdOverride = process.env.ROOK_WEBAUTHN_RP_ID
+  const party = resolveRelyingParty({
+    originOverride,
+    rpIdOverride,
     forwardedHost: headers.get('x-forwarded-host'),
     forwardedProto: headers.get('x-forwarded-proto'),
     host: headers.get('host'),
   })
+  const configured = Boolean(originOverride?.trim() && rpIdOverride?.trim())
+  const local =
+    party.rpID === 'localhost' ||
+    party.rpID === '127.0.0.1' ||
+    party.rpID === '::1' ||
+    party.rpID === '[::1]'
+  if (process.env.NODE_ENV === 'production' && !configured && !local) {
+    throw new Error('WEBAUTHN_CONFIG')
+  }
+  return party
 }
 
 function parseTransports(raw: string): AuthenticatorTransportFuture[] {

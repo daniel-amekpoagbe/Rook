@@ -34,6 +34,11 @@ export const SCHEMA_SQL = `
     reset_at   BIGINT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS server_secrets (
+    name  TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS shares (
     id         TEXT PRIMARY KEY,
     user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

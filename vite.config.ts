@@ -19,6 +19,21 @@ export default defineConfig({
     viteReact(),
     // Vercel sets VERCEL=1 during its build. Local builds keep the normal
     // Node server output used by `npm start` and the browser test runner.
-    nitro({ preset: process.env.VERCEL ? 'vercel' : 'node-server' }),
+    nitro({
+      preset: process.env.VERCEL ? 'vercel' : 'node-server',
+      routeRules: {
+        '/**': {
+          headers: {
+            'X-Content-Type-Options': 'nosniff',
+            'X-Frame-Options': 'DENY',
+            'Referrer-Policy': 'no-referrer',
+            'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()',
+            'Strict-Transport-Security': 'max-age=15552000',
+            'Content-Security-Policy':
+              "base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
+          },
+        },
+      },
+    }),
   ],
 })

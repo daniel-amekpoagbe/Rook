@@ -1,8 +1,9 @@
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import pg from 'pg'
 import { SCHEMA_SQL } from './schema'
+import { supabaseRootCa } from './supabase-ca'
 
 export type SqlDialect = 'sqlite' | 'postgres'
 
@@ -215,6 +216,19 @@ const SSL_QUERY_PARAMS = [
   'uselibpqcompat',
 ]
 
+/** Prefer the cert file, and fall back to the bundled Supabase root if it is not deployed. */
+function loadDatabaseCa(): string | undefined {
+  const configured = process.env.ROOK_DATABASE_SSL_CA
+  if (!configured) return undefined
+  try {
+    return readFileSync(configured, 'utf8')
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code !== 'ENOENT') throw error
+    return supabaseRootCa
+  }
+}
+
 /**
  * Build pg pool options explicitly. `pg` lets query parameters in the
  * connection string override the options object, so an `sslmode=disable` (or
@@ -223,7 +237,7 @@ const SSL_QUERY_PARAMS = [
  */
 function postgresPoolOptions(connectionString: string): {
   connectionString: string
-  ssl?: { rejectUnauthorized: boolean }
+  ssl?: { rejectUnauthorized: boolean; ca?: string }
 } {
   let url: URL | null = null
   try {
@@ -254,10 +268,11 @@ function postgresPoolOptions(connectionString: string): {
     process.env.ROOK_DATABASE_SSL_REJECT_UNAUTHORIZED === 'false'
       ? false
       : !urlNoVerify
+  const ca = loadDatabaseCa()
 
   return {
     connectionString: url ? url.toString() : connectionString,
-    ssl: enabled ? { rejectUnauthorized } : undefined,
+    ssl: enabled ? { rejectUnauthorized, ...(ca ? { ca } : {}) } : undefined,
   }
 }
 
@@ -316,8 +331,44 @@ async function migrate(sql: SqlDatabase): Promise<void> {
     // WebAuthn signature counters are unsigned 32-bit values and can exceed
     // PostgreSQL's signed 32-bit INTEGER range.
     await sql.exec('ALTER TABLE passkeys ALTER COLUMN counter TYPE BIGINT')
+    // The app connects as the table owner, which bypasses row-level security.
+    // The Data API roles get no policies and no grants, so a public anon key
+    // cannot read ciphertext, verifiers, or session hashes.
+    await sql.exec(POSTGRES_DATA_API_LOCKDOWN)
   }
 }
+
+const POSTGRES_DATA_API_LOCKDOWN = `
+DO $$
+DECLARE
+  tbl text;
+  role_name text;
+BEGIN
+  FOREACH tbl IN ARRAY ARRAY[
+    'users',
+    'vaults',
+    'sessions',
+    'login_attempts',
+    'server_secrets',
+    'shares',
+    'user_identities',
+    'recipient_shares',
+    'passkeys',
+    'webauthn_challenges',
+    'passkey_recovery'
+  ]
+  LOOP
+    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', tbl);
+    EXECUTE format('REVOKE ALL ON TABLE %I FROM PUBLIC', tbl);
+    FOREACH role_name IN ARRAY ARRAY['anon', 'authenticated', 'service_role']
+    LOOP
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
+        EXECUTE format('REVOKE ALL ON TABLE %I FROM %I', tbl, role_name);
+      END IF;
+    END LOOP;
+  END LOOP;
+END $$;
+`
 
 export function ensureSchema(): Promise<void> {
   if (!schemaPromise) {

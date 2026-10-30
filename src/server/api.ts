@@ -1,7 +1,11 @@
 import { createServerFn } from '@tanstack/react-start'
+import { getRequestHeaders } from '@tanstack/react-start/server'
 import { z } from 'zod'
 import type { KdfConfig } from '~/lib/crypto'
 import { RECIPIENT_SHARE_TTL_MS } from '~/lib/recipient-share'
+import { SHARE_TTL_MS } from '~/lib/share'
+import { decoyKdf } from './decoy-kdf'
+import { registrationAllowed } from './registration-policy'
 
 const kdfSchema = z.object({
   algorithm: z.literal('argon2id'),
@@ -68,30 +72,72 @@ async function passkeys() {
   return import('./webauthn.server')
 }
 
+const WINDOW_MS = 15 * 60 * 1000
+const DUMMY_AUTH_HASH = '0'.repeat(64)
+
+function hostnameOf(host: string): string {
+  const value = host.trim().toLowerCase()
+  if (value.startsWith('[')) return value.slice(0, value.indexOf(']') + 1)
+  const colon = value.indexOf(':')
+  return colon === -1 ? value : value.slice(0, colon)
+}
+
+function isLocalHost(host: string): boolean {
+  const hostname = hostnameOf(host)
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1'
+}
+
+/** Shared by every instance on a public host. Local tests are not limited by address. */
+function abuseAddress(): string | null {
+  const headers = getRequestHeaders()
+  const host = headers.get('x-forwarded-host') ?? headers.get('host') ?? ''
+  if (!process.env.VERCEL && isLocalHost(host)) return null
+  const address =
+    headers.get('x-vercel-forwarded-for')?.split(',')[0]?.trim() ||
+    headers.get('x-real-ip')?.trim() ||
+    headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+    'unknown'
+  return address.slice(0, 128)
+}
+
+async function consumeLimit(
+  db: {
+    isRateLimited: (bucket: string, now: number, limit?: number) => Promise<boolean>
+    recordFailure: (bucket: string, now: number, windowMs: number) => Promise<void>
+  },
+  bucket: string,
+  now: number,
+  windowMs: number,
+  limit: number,
+): Promise<void> {
+  if (await db.isRateLimited(bucket, now, limit)) throw new Error('RATE_LIMITED')
+  await db.recordFailure(bucket, now, windowMs)
+}
+
 async function verifyCredentials(handleInput: string, authHash: string) {
   const { db, session } = await store()
   const handle = handleInput.trim().toLowerCase()
   const now = Date.now()
   const bucket = `login:${handle}`
+  const address = abuseAddress()
+  const addressBucket = address ? `login-ip:${address}` : null
 
-  if (await db.isRateLimited(bucket, now)) {
+  if (await db.isRateLimited(bucket, now)) throw new Error('RATE_LIMITED')
+  if (addressBucket && (await db.isRateLimited(addressBucket, now, 40))) {
     throw new Error('RATE_LIMITED')
   }
 
   const user = await db.findUserByHandle(handle)
-  if (!user || !session.constantTimeEqual(user.auth_hash, session.sha256Hex(authHash))) {
-    await db.recordFailure(bucket, now, 15 * 60 * 1000)
+  const digest = session.sha256Hex(authHash)
+  const matches = session.constantTimeEqual(user?.auth_hash ?? DUMMY_AUTH_HASH, digest)
+  if (!user || !matches) {
+    await db.recordFailure(bucket, now, WINDOW_MS)
+    if (addressBucket) await db.recordFailure(addressBucket, now, WINDOW_MS)
     throw new Error('INVALID_CREDENTIALS')
   }
 
   await db.clearFailures(bucket)
   return { db, session, user }
-}
-
-/** Constant-time-ish: unknown handles get a stable fake salt so the UI flow is identical. */
-function fakeKdf(handle: string): KdfConfig {
-  const saltSeed = Buffer.from(handle).toString('base64url').padEnd(22, 'A').slice(0, 22)
-  return { algorithm: 'argon2id', t: 3, m: 65536, p: 1, salt: saltSeed }
 }
 
 export const meFn = createServerFn({ method: 'GET' }).handler(async () => {
@@ -162,10 +208,18 @@ export const registerFn = createServerFn({ method: 'POST' })
   )
   .handler(async ({ data }) => {
     const { db, session } = await store()
+    const now = Date.now()
+    const address = abuseAddress()
+    if (address) await consumeLimit(db, `register-ip:${address}`, now, 60 * 60 * 1000, 8)
+    const open = registrationAllowed({
+      flag: process.env.ROOK_ALLOW_REGISTRATION,
+      publicDeployment: Boolean(process.env.VERCEL),
+      userCount: await db.countUsers(),
+    })
+    if (!open) throw new Error('REGISTRATION_CLOSED')
     if (await db.findUserByHandle(data.handle)) {
       throw new Error('HANDLE_TAKEN')
     }
-    const now = Date.now()
     const userId = crypto.randomUUID()
     try {
       await db.createUserWithVault(
@@ -196,8 +250,13 @@ export const kdfFn = createServerFn({ method: 'POST' })
   .validator(z.object({ handle: z.string().trim().min(1).max(64) }))
   .handler(async ({ data }) => {
     const { db } = await store()
-    const user = await db.findUserByHandle(data.handle.trim().toLowerCase())
-    if (!user) return { kdf: fakeKdf(data.handle.trim().toLowerCase()) }
+    const handle = data.handle.trim().toLowerCase()
+    const now = Date.now()
+    await consumeLimit(db, `kdf:${handle}`, now, WINDOW_MS, 40)
+    const address = abuseAddress()
+    if (address) await consumeLimit(db, `kdf-ip:${address}`, now, WINDOW_MS, 60)
+    const user = await db.findUserByHandle(handle)
+    if (!user) return { kdf: decoyKdf(handle, await db.getKdfPepper()) }
     return { kdf: JSON.parse(user.kdf) as KdfConfig }
   })
 
@@ -335,12 +394,15 @@ export const pushVaultFn = createServerFn({ method: 'POST' })
   .validator(
     z.object({
       baseVersion: z.number().int().min(0),
+      authHash: authHashSchema,
       ...vaultPayload,
     }),
   )
   .handler(async ({ data }) => {
     const { db, session } = await store()
     const user = await session.requireUser()
+    const verified = await verifyCredentials(user.handle, data.authHash)
+    if (verified.user.id !== user.id) throw new Error('INVALID_CREDENTIALS')
     const current = await db.getVault(user.id)
     if (!current) throw new Error('VAULT_MISSING')
     if (current.version !== data.baseVersion) {
@@ -416,8 +478,8 @@ export const rotateFn = createServerFn({ method: 'POST' })
   })
 
 /**
- * Legacy bearer-link read. New shares are recipient-bound, but links created
- * before this release stay readable until their three-day expiry.
+ * Read a share link. The server returns ciphertext only. The key stays in the
+ * URL fragment and never reaches this handler.
  */
 export const getShareFn = createServerFn({ method: 'GET' })
   .validator(z.object({ id: shareIdSchema }))
@@ -434,6 +496,75 @@ export const getShareFn = createServerFn({ method: 'GET' })
       expiresAt: share.expires_at,
       createdAt: share.created_at,
     }
+  })
+
+const MAX_ACTIVE_LINKS = 50
+const MAX_ACTIVE_LINKS_PER_ENTRY = 20
+
+/**
+ * Store a read-only share link. The browser seals the login first, so this
+ * handler never receives the password or the link key.
+ */
+export const createShareFn = createServerFn({ method: 'POST' })
+  .validator(
+    z.object({
+      id: shareIdSchema,
+      entryId: entryIdSchema,
+      ciphertext: shareCiphertext,
+      nonce: vaultPayload.nonce,
+    }),
+  )
+  .handler(async ({ data }) => {
+    const { db, session } = await store()
+    const user = await session.requireUser()
+    const now = Date.now()
+    await db.deleteExpiredShares(now)
+    if (await db.countActiveShares(user.id, now) >= MAX_ACTIVE_LINKS) {
+      throw new Error('SHARE_LIMIT')
+    }
+    if (
+      await db.countActiveSharesForEntry(user.id, data.entryId, now) >= MAX_ACTIVE_LINKS_PER_ENTRY
+    ) {
+      throw new Error('SHARE_ENTRY_LIMIT')
+    }
+    const expiresAt = now + SHARE_TTL_MS
+    await db.createShare({
+      id: data.id,
+      user_id: user.id,
+      entry_id: data.entryId,
+      ciphertext: data.ciphertext,
+      nonce: data.nonce,
+      expires_at: expiresAt,
+      created_at: now,
+    })
+    return { id: data.id, expiresAt, createdAt: now }
+  })
+
+export const listEntrySharesFn = createServerFn({ method: 'GET' })
+  .validator(z.object({ entryId: entryIdSchema }))
+  .handler(async ({ data }) => {
+    const { db, session } = await store()
+    const user = await session.requireUser()
+    const now = Date.now()
+    await db.deleteExpiredShares(now)
+    return { shares: await db.listSharesForEntry(user.id, data.entryId, now) }
+  })
+
+export const listSentSharesFn = createServerFn({ method: 'GET' }).handler(async () => {
+  const { db, session } = await store()
+  const user = await session.requireUser()
+  const now = Date.now()
+  await db.deleteExpiredShares(now)
+  return { shares: await db.listSharesForUser(user.id, now) }
+})
+
+export const revokeShareFn = createServerFn({ method: 'POST' })
+  .validator(z.object({ id: shareIdSchema }))
+  .handler(async ({ data }) => {
+    const { db, session } = await store()
+    const user = await session.requireUser()
+    if (!await db.deleteShareForOwner(data.id, user.id)) throw new Error('SHARE_NOT_FOUND')
+    return { ok: true }
   })
 
 /** Resolve a recipient handle to the public half of their sharing identity. */
@@ -582,5 +713,6 @@ export const deleteRecipientSharesForEntryFn = createServerFn({ method: 'POST' }
     const { db, session } = await store()
     const user = await session.requireUser()
     const deleted = await db.deleteRecipientSharesForEntry(user.id, data.entryId)
-    return { deleted }
+    const links = await db.deleteSharesForEntry(user.id, data.entryId)
+    return { deleted: deleted + links }
   })

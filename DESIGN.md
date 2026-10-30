@@ -133,7 +133,7 @@ components:
 
 **Creative North Star: "The Quiet Vault"**
 
-Rook should feel like the desk of a careful records clerk: cool gray chrome, white work surfaces, hairline rules, and exactly one confident blue that appears only where something can be done. It is the familiar three-pane password manager, executed at the craft level of 1Password 8 and Bitwarden rather than reimagined as a security dashboard. The name and mark are a chess rook — a quiet, watchful castle — so the identity is monochrome and geometric, never a mascot.
+Rook should feel like the desk of a careful records clerk: cool gray chrome, white work surfaces, hairline rules, and exactly one confident blue that appears only where something can be done. It is a three-pane password manager with the density of a desktop tool: navigation, list, and detail. The name and mark are a chess rook — a quiet, watchful castle — so the identity is monochrome and geometric, never a mascot.
 
 The interface is quiet by default and precise in the details. Density is closer to a desktop tool than a marketing page: 13–14px body text, 52px list rows, 34px controls, generous padding inside a tight frame. Color is functional — blue for action and selection, red for danger, amber for caution, green for healthy state. Nothing glows. Depth comes from a hairline border at rest; the 1px resting shadow marks small cards and controls, while the overlay shadow is reserved for surfaces that genuinely float.
 

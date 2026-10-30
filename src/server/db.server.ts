@@ -4,6 +4,7 @@
  * ROOK_DATABASE_URL is set. Nothing here ever sees a master password or
  * plaintext vault.
  */
+import { randomBytes } from 'node:crypto'
 import { ensureSchema, getSql, isUniqueViolation, type SqlDatabase } from './sql.server'
 
 async function database(): Promise<SqlDatabase> {
@@ -218,8 +219,46 @@ export async function deleteExpiredSessions(now: number): Promise<void> {
   await sql.run('DELETE FROM sessions WHERE expires_at < ?', [now])
 }
 
+export async function countUsers(): Promise<number> {
+  const sql = await database()
+  const row = await sql.get<{ count: number | string }>('SELECT COUNT(*) AS count FROM users')
+  return Number(row?.count ?? 0)
+}
+
+/**
+ * Secret used only to hide whether a username exists. An env value is shared
+ * across instances; otherwise one random value is stored in the database.
+ */
+export async function getKdfPepper(): Promise<string> {
+  const configured = process.env.ROOK_KDF_PEPPER?.trim()
+  if (configured && configured.length >= 16) return configured
+
+  const sql = await database()
+  const existing = await sql.get<{ value: string }>(
+    'SELECT value FROM server_secrets WHERE name = ?',
+    ['kdf-pepper'],
+  )
+  if (existing?.value) return existing.value
+
+  const created = randomBytes(32).toString('base64url')
+  await sql.run(
+    'INSERT INTO server_secrets (name, value) VALUES (?, ?) ON CONFLICT(name) DO NOTHING',
+    ['kdf-pepper', created],
+  )
+  const stored = await sql.get<{ value: string }>(
+    'SELECT value FROM server_secrets WHERE name = ?',
+    ['kdf-pepper'],
+  )
+  if (!stored?.value) throw new Error('KDF_PEPPER_UNAVAILABLE')
+  return stored.value
+}
+
 /** Fixed-window brute-force guard. Returns true when the caller is locked out. */
-export async function isRateLimited(bucket: string, now: number): Promise<boolean> {
+export async function isRateLimited(
+  bucket: string,
+  now: number,
+  limit = 8,
+): Promise<boolean> {
   const sql = await database()
   const row = await sql.get<{ failures: number; reset_at: number }>(
     'SELECT failures, reset_at FROM login_attempts WHERE bucket = ?',
@@ -227,7 +266,7 @@ export async function isRateLimited(bucket: string, now: number): Promise<boolea
   )
   if (!row) return false
   if (row.reset_at <= now) return false
-  return Number(row.failures) >= 8
+  return Number(row.failures) >= limit
 }
 
 export async function recordFailure(
@@ -265,10 +304,96 @@ export async function getShare(id: string): Promise<ShareRow | undefined> {
   return sql.get<ShareRow>('SELECT * FROM shares WHERE id = ?', [id])
 }
 
-/** Legacy bearer links remain readable until their original expiry. */
+/** Bearer links remain readable until their original expiry. */
 export async function deleteExpiredShares(now: number): Promise<void> {
   const sql = await database()
   await sql.run('DELETE FROM shares WHERE expires_at <= ?', [now])
+}
+
+export interface SentLinkShareRow {
+  id: string
+  entryId: string
+  expiresAt: number
+  createdAt: number
+}
+
+export async function createShare(row: ShareRow): Promise<void> {
+  const sql = await database()
+  await sql.run(
+    `INSERT INTO shares (id, user_id, entry_id, ciphertext, nonce, expires_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [row.id, row.user_id, row.entry_id, row.ciphertext, row.nonce, row.expires_at, row.created_at],
+  )
+}
+
+export async function countActiveShares(userId: string, now: number): Promise<number> {
+  const sql = await database()
+  const row = await sql.get<{ count: number | string }>(
+    'SELECT COUNT(*) AS count FROM shares WHERE user_id = ? AND expires_at > ?',
+    [userId, now],
+  )
+  return Number(row?.count ?? 0)
+}
+
+export async function countActiveSharesForEntry(
+  userId: string,
+  entryId: string,
+  now: number,
+): Promise<number> {
+  const sql = await database()
+  const row = await sql.get<{ count: number | string }>(
+    `SELECT COUNT(*) AS count FROM shares
+     WHERE user_id = ? AND entry_id = ? AND expires_at > ?`,
+    [userId, entryId, now],
+  )
+  return Number(row?.count ?? 0)
+}
+
+export async function listSharesForEntry(
+  userId: string,
+  entryId: string,
+  now: number,
+): Promise<SentLinkShareRow[]> {
+  const sql = await database()
+  return sql.all<SentLinkShareRow>(
+    `SELECT id,
+            entry_id AS "entryId",
+            expires_at AS "expiresAt",
+            created_at AS "createdAt"
+     FROM shares
+     WHERE user_id = ? AND entry_id = ? AND expires_at > ?
+     ORDER BY created_at DESC`,
+    [userId, entryId, now],
+  )
+}
+
+export async function listSharesForUser(userId: string, now: number): Promise<SentLinkShareRow[]> {
+  const sql = await database()
+  return sql.all<SentLinkShareRow>(
+    `SELECT id,
+            entry_id AS "entryId",
+            expires_at AS "expiresAt",
+            created_at AS "createdAt"
+     FROM shares
+     WHERE user_id = ? AND expires_at > ?
+     ORDER BY created_at DESC`,
+    [userId, now],
+  )
+}
+
+export async function deleteShareForOwner(id: string, userId: string): Promise<boolean> {
+  const sql = await database()
+  const result = await sql.run('DELETE FROM shares WHERE id = ? AND user_id = ?', [id, userId])
+  return result.changes > 0
+}
+
+export async function deleteSharesForEntry(userId: string, entryId: string): Promise<number> {
+  const sql = await database()
+  const result = await sql.run('DELETE FROM shares WHERE user_id = ? AND entry_id = ?', [
+    userId,
+    entryId,
+  ])
+  return result.changes
 }
 
 export interface RecipientShareRow {
