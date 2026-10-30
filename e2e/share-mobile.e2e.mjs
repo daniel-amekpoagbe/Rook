@@ -2,7 +2,6 @@ import { BASE, artifactPath, launchBrowser } from './helpers.mjs'
 
 const STAMP = Date.now().toString().slice(-8)
 const OWNER_HANDLE = `mobile.share.owner.${STAMP}@example.com`
-const RECIPIENT_HANDLE = `mobile.share.recipient.${STAMP}@example.com`
 const MASTER = 'mango-otter-vinyl-harbor-cobalt'
 const TITLE = 'Mobile shared login'
 const USERNAME = 'mobile@example.com'
@@ -14,16 +13,16 @@ const ownerContext = await browser.newContext({
   deviceScaleFactor: 2,
 })
 const owner = await ownerContext.newPage()
-const recipientContext = await browser.newContext({
+const guestContext = await browser.newContext({
   viewport: { width: 390, height: 844 },
   deviceScaleFactor: 2,
 })
-const recipient = await recipientContext.newPage()
+const guest = await guestContext.newPage()
 const errors = []
 
 for (const [label, page] of [
   ['owner', owner],
-  ['recipient', recipient],
+  ['guest', guest],
 ]) {
   page.on('console', (message) => {
     if (message.type() === 'error') errors.push(`${label}: ${message.text()}`)
@@ -31,37 +30,17 @@ for (const [label, page] of [
   page.on('pageerror', (error) => errors.push(`${label}: pageerror: ${error.message}`))
 }
 
-async function createAccount(page, handle) {
-  await page.goto(BASE, { waitUntil: 'networkidle' })
-  await page.waitForSelector('input[name="handle"]', { timeout: 30_000 })
-  await page.getByRole('button', { name: 'Create vault', exact: true }).click()
-  await page.waitForSelector('input[name="confirm-password"]')
-  await page.fill('input[name="handle"]', handle)
-  await page.fill('input[name="master-password"]', MASTER)
-  await page.fill('input[name="confirm-password"]', MASTER)
-  await page.getByRole('button', { name: 'Create encrypted vault' }).click()
-  await page.waitForSelector('input[aria-label="Search vault"]', { timeout: 180_000 })
-}
-
-async function openMobileNav(page) {
-  const open = page.getByRole('button', { name: 'Open navigation' })
-  if (await open.isVisible().catch(() => false)) await open.click()
-}
-
-async function openInbox(page) {
-  await openMobileNav(page)
-  await page.getByRole('button', { name: 'Shared with me', exact: true }).click()
-  const dialog = page.getByRole('dialog', { name: 'Shared with me' })
-  await dialog.waitFor()
-  return dialog
-}
-
-async function closeDialog(dialog) {
-  await dialog.getByRole('button', { name: 'Close dialog' }).click()
-}
-
 try {
-  await createAccount(owner, OWNER_HANDLE)
+  await owner.goto(BASE, { waitUntil: 'networkidle' })
+  await owner.waitForSelector('input[name="handle"]', { timeout: 30_000 })
+  await owner.getByRole('button', { name: 'Create vault', exact: true }).click()
+  await owner.waitForSelector('input[name="confirm-password"]')
+  await owner.fill('input[name="handle"]', OWNER_HANDLE)
+  await owner.fill('input[name="master-password"]', MASTER)
+  await owner.fill('input[name="confirm-password"]', MASTER)
+  await owner.getByRole('button', { name: 'Create encrypted vault' }).click()
+  await owner.waitForSelector('input[aria-label="Search vault"]', { timeout: 180_000 })
+
   await owner.getByRole('button', { name: 'New item' }).click()
   await owner.getByRole('menuitem', { name: 'Login' }).click()
   await owner.fill('input[name="title"]', TITLE)
@@ -71,46 +50,33 @@ try {
   await owner.getByRole('heading', { name: TITLE, exact: true }).waitFor()
   console.log('• mobile owner vault and login created')
 
-  await createAccount(recipient, RECIPIENT_HANDLE)
-  const emptyInbox = await openInbox(recipient)
-  await emptyInbox
-    .getByRole('heading', { name: 'Nothing shared with you', exact: true })
-    .waitFor({ timeout: 30_000 })
-  await closeDialog(emptyInbox)
-  console.log('• mobile recipient identity ready')
-
   await owner.getByRole('button', { name: 'Share', exact: true }).click()
-  const shareDialog = owner.getByRole('dialog', { name: 'Share password' })
+  const shareDialog = owner.getByRole('dialog', { name: 'Share' })
   await shareDialog.waitFor()
   await owner.screenshot({ path: artifactPath('share-dialog-mobile.png') })
-  await shareDialog.getByLabel('Recipient handle').fill(RECIPIENT_HANDLE)
-  await shareDialog.getByRole('button', { name: 'Share', exact: true }).click()
-  await shareDialog.getByText(`Shared with ${RECIPIENT_HANDLE}.`, { exact: true }).waitFor({
-    timeout: 30_000,
-  })
+  await shareDialog.getByRole('button', { name: 'Create link', exact: true }).click()
+  const field = shareDialog.getByRole('textbox', { name: 'Share link' })
+  await field.waitFor({ timeout: 30_000 })
+  const link = await field.inputValue()
   await owner.screenshot({ path: artifactPath('share-dialog-mobile-created.png') })
-  await closeDialog(shareDialog)
-  console.log('• mobile owner shared the login with a recipient handle')
+  await shareDialog.getByRole('button', { name: 'Close dialog' }).click()
+  console.log('• mobile owner created a read-only link')
 
-  const inbox = await openInbox(recipient)
-  await inbox.getByRole('button', { name: new RegExp(`^${TITLE}`) }).waitFor({
-    timeout: 30_000,
-  })
-  await inbox.screenshot({ path: artifactPath('share-inbox-mobile.png') })
-  await inbox.getByRole('button', { name: new RegExp(`^${TITLE}`) }).click()
-  await inbox.getByRole('heading', { name: TITLE, exact: true }).waitFor()
-  await inbox.getByText(USERNAME, { exact: true }).waitFor()
-  if (await inbox.getByText(PASSWORD, { exact: true }).count()) {
+  await guest.goto(link, { waitUntil: 'networkidle' })
+  await guest.getByRole('heading', { name: TITLE, exact: true }).waitFor({ timeout: 30_000 })
+  await guest.getByText(USERNAME, { exact: true }).waitFor()
+  await guest.getByText(/Read only/).waitFor()
+  if (await guest.getByText(PASSWORD, { exact: true }).count()) {
     throw new Error('mobile password was visible before reveal')
   }
-  await inbox.getByRole('button', { name: 'Reveal password' }).click()
-  await inbox.getByText(PASSWORD, { exact: true }).waitFor()
-  const overflow = await recipient.evaluate(
+  await guest.getByRole('button', { name: 'Reveal password' }).click()
+  await guest.getByText(PASSWORD, { exact: true }).waitFor()
+  const overflow = await guest.evaluate(
     () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
   )
   if (overflow) throw new Error('mobile shared item caused horizontal overflow')
-  await recipient.screenshot({ path: artifactPath('share-inbox-mobile-detail.png') })
-  console.log('• mobile recipient decrypted the shared login')
+  await guest.screenshot({ path: artifactPath('share-link-mobile.png') })
+  console.log('• mobile guest viewed the shared login')
 
   if (errors.length > 0) {
     console.log('CONSOLE ERRORS:')
@@ -123,9 +89,7 @@ try {
   console.error('MOBILE_RESULT=FAIL')
   console.error(error)
   await owner.screenshot({ path: artifactPath('share-mobile-owner-failure.png') }).catch(() => {})
-  await recipient
-    .screenshot({ path: artifactPath('share-mobile-recipient-failure.png') })
-    .catch(() => {})
+  await guest.screenshot({ path: artifactPath('share-mobile-guest-failure.png') }).catch(() => {})
   process.exitCode = 1
 } finally {
   await browser.close()

@@ -38,39 +38,17 @@ lock/unlock cycle.
 
 ## Sharing flow
 
-The main sharing flow creates two accounts. The recipient opens “Shared with me”
-once so the client publishes a P-256 identity public key. The owner then shares
-a login by handle. The test checks SQLite directly to confirm:
+The main sharing flow creates one vault, then a read-only link. The test checks
+SQLite directly to confirm the `shares` row is ciphertext only, lasts exactly
+three days, and that the password never appears in a request body. A second
+browser opens the link, reveals the password, and confirms there is no edit
+control. Revoking the link makes it unavailable. A second link is expired in
+SQLite and the public page refuses it.
 
-- the identity private key and share payload are ciphertext only;
-- the share row carries an ephemeral public key, a wrap nonce, and a wrapped
-  share key;
-- the lifetime is exactly three days;
-- no plaintext password, username, title, or master password appears in the
-  recipient-share row;
-- no plaintext master password appears in either identity row;
-- none of those secrets appears in the captured request bodies.
-
-It then opens the recipient inbox, decrypts the share in the browser, reveals
-the password, and confirms the item was not added to the recipient vault. Next
-it rotates the recipient master password, locks and unlocks with the new
-password, and verifies the same share still decrypts. That exercises the atomic
-identity re-wrap. Finally it revokes the share, confirms both the owner and
-recipient lose access, creates a second share, expires it directly in SQLite,
-and confirms the recipient inbox cleans it up.
-
-Legacy bearer links are no longer created by the UI. To verify read
-compatibility, the flow inserts a valid legacy `shares` row directly and opens
-its URL-fragment link.
-
-`share-inbox.e2e.mjs` verifies the recipient unread badge and notification,
-then adds a received login to the recipient vault, confirms duplicate detection,
-and checks that the “Shared by me” view can revoke the active share without
-removing the saved copy.
-
-`share-edge.e2e.mjs` covers long and password-only items, including no
-horizontal overflow. `share-mobile.e2e.mjs` repeats the share and inbox flow at
-a 390 px viewport and checks the mobile navigation.
+`share-inbox.e2e.mjs` opens Shared by me, finds the read-only link, and revokes
+it. `share-edge.e2e.mjs` covers long and password-only items on the public
+page, including no horizontal overflow. `share-mobile.e2e.mjs` creates and
+opens a link at a 390 px viewport.
 
 ## Polish flow
 

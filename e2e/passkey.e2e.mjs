@@ -107,7 +107,7 @@ try {
   await settingsAgain.waitFor({ timeout: 10000 })
   await settingsAgain.getByRole('button', { name: /^Remove Passkey/ }).click()
   await settingsAgain.getByRole('button', { name: 'Remove', exact: true }).click()
-  await settingsAgain.getByText('No passkeys yet.').waitFor({ timeout: 10000 })
+  await settingsAgain.getByText('Passkeys are off.').waitFor({ timeout: 10000 })
   log('last passkey removed and recovery code discarded')
   await settingsAgain.getByRole('button', { name: 'Close panel' }).click()
   await settingsAgain.waitFor({ state: 'detached', timeout: 5000 })
